@@ -112,7 +112,7 @@ launch = ""                   # 微信 exe 的完整路径（每台电脑不同�
 # 最方便在右键桌宠「设置…」→「常用词」页里改。
 terms = [
   # AI 编程
-  "Claude", "Claude Code", "Anthropic", "Codex", "ChatGPT", "GPT", "OpenAI", "Gemini", "DeepSeek",
+  "Claude", "Claude Code", "Anthropic", "Opus", "Sonnet", "Haiku", "Codex", "ChatGPT", "GPT", "OpenAI", "Gemini", "DeepSeek",
   "Cursor", "Copilot", "prompt", "agent", "subagent", "MCP", "skill", "hook", "artifact", "token",
   "context", "LLM", "RAG", "API", "SDK", "CLI", "vibe coding", "GitHub", "README", "repo", "commit",
   "push", "pull", "merge", "branch", "PR", "issue", "bug", "debug", "refactor", "deploy", "Python",
@@ -137,6 +137,10 @@ terms = [
 "克劳德" = "Claude"
 "code X" = "Codex"
 "promp" = "prompt"
+"prot" = "prompt"
+"opice" = "Opus"
+"disord" = "Discord"
+"dsord" = "Discord"
 "artact" = "artifact"
 "art fact" = "artifact"
 "read me" = "README"

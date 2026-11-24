@@ -1230,6 +1230,8 @@ class Overlay:
         self._pat_until = 0.0           # 被摸头（单击）动作的结束时间
         self._unread: dict[str, float] = {}  # 做完了但你还没回到 Claude 看过的会话 -> 完成时间
         self._fg_checked = 0.0          # 上次检查「Claude 在不在前台」的时间
+        self._front_prev = False        # 上次检查时 Claude 在不在前台
+        self._front_grace = 0.0         # 单击打开某个会话后，这段时间内切到 Claude 不算「全看过了」
         self._top_checked = 0.0         # 上次重新置顶的时间
         self._bubble = None             # (文字, 截止时间, 种类)
         self._activity = now            # 最近一次有动静的时间，用来判断睡觉
@@ -1350,6 +1352,7 @@ class Overlay:
                 # 做完的时候你不在 Claude 窗口里，就记成「没看」，桌宠头上亮小红点
                 if self.pet_opt["unread"] and not self._claude_in_front():
                     self._unread[sid] = now
+                    self._front_prev = False     # 记红点时 Claude 不在前台
                 self._celebrate_until = now + 2.2
                 if self.pet_opt["done_sound"]:
                     self.sounds.play("done")
@@ -1414,21 +1417,28 @@ class Overlay:
         if not self._unread or now - self._fg_checked < 0.3:
             return
         self._fg_checked = now
-        if self._claude_in_front():
+        front = self._claude_in_front()
+        # 只在「切回 Claude」的那一下算看过；单击桌宠打开某个会话引起的切换不算，剩下的红点留着
+        if front and not self._front_prev and now > self._front_grace:
             self._unread.clear()
             self._dirty = True
+        self._front_prev = front
 
     def _on_click(self) -> None:
         """单击桌宠：摸摸头（一个小动作），关掉“需要你”的提醒、叫醒它，并把 Claude 切到前台。"""
         self._clear_alert()
-        self._unread.clear()                     # 单击会切到 Claude，算看过了
+        # 有小红点：打开最新做完的那个会话，只清它的红点；其他的再点一下接着看
+        sid = max(self._unread, key=self._unread.get) if self._unread else None
+        if sid:
+            self._unread.pop(sid, None)
+            self._front_grace = time.monotonic() + 3.0
         self._celebrate_until = 0.0
         self._activity = time.monotonic()
         self._pat_until = self._activity + 1.4
         self._dirty = True
-        log.info("单击桌宠")
+        log.info("单击桌宠%s", f"，打开会话 {sid[:8]}" if sid else "")
         if self.on_click:
-            self.on_click()
+            self.on_click(sid)
 
     def _pet_anim(self, now: float, base: str) -> str:
         if base == "recording":
@@ -2096,6 +2106,45 @@ class MicTester:
                 ole32.CoUninitialize()
 
 
+# ───────────────────────────── Claude 桌面版会话 ─────────────────────────────
+# 钩子给的是 Claude Code 的 session_id；桌面版的 Code 页签用自己的 local_… 编号，
+# 两者的对应写在桌面版的会话文件里（cliSessionId 字段）。
+# 用 claude://code/continue?session=local_… 可以让桌面版切到那个会话。
+# 这是桌面版内部的格式，没有公开文档：找不到时退回成只把 Claude 切到前台。
+
+_session_map: dict[str, str] = {}
+
+
+def _desktop_session_files() -> list[Path]:
+    base = Path(os.environ.get("LOCALAPPDATA", "")) / "Claude-Data"
+    if not base.is_dir():
+        return []
+    return list(base.glob("*/claude-code-sessions/*/*/local_*.json"))
+
+
+def find_desktop_session(cli_session: str) -> str | None:
+    """Claude Code 的 session_id -> 桌面版的 local_… 编号；找不到返回 None。"""
+    if cli_session in _session_map:
+        return _session_map[cli_session]
+    best, best_t = None, -1.0
+    for f in _desktop_session_files():
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if d.get("isArchived"):
+            continue
+        ids = {d.get("cliSessionId"), d.get("lastAssistantCliSessionId")}
+        local = str(d.get("sessionId") or "")
+        if cli_session in ids and re.fullmatch(r"local_[A-Za-z0-9-]{1,64}", local):
+            t = float(d.get("lastActivityAt") or 0)
+            if t > best_t:
+                best, best_t = local, t
+    if best:
+        _session_map[cli_session] = best
+    return best
+
+
 # ───────────────────────────── 主程序 ─────────────────────────────
 
 class App:
@@ -2109,7 +2158,7 @@ class App:
         self._generation = 0  # 每次“取消”加一，用来作废还在转写的结果
         self._main_tid = kernel32.GetCurrentThreadId()
         self.beep = SoundBank(cfg)
-        self.overlay = Overlay(cfg, self.quit, lambda: self._focus("focus", toggle=False), self.beep)
+        self.overlay = Overlay(cfg, self.quit, self._on_pet_click, self.beep)
         self.overlay.on_command = self._command
         self._hotkeys: dict[int, tuple[str, int]] = {}
         self._paused_at = 0.0           # 设置窗口录入新快捷键期间暂停全部快捷键
@@ -2270,6 +2319,20 @@ class App:
             self._focus(action)
         if action not in ("talk", "talk_send"):
             self._request_caps_fix(vk)   # 说话类在松开、录音结束后再修
+
+    def _on_pet_click(self, session: str | None) -> None:
+        """单击桌宠：切到 Claude；有没看的会话就顺便切到最新做完的那个。"""
+        self._focus("focus", toggle=False)
+        local = find_desktop_session(session) if session and session != "?" else None
+        if not local:
+            if session:
+                log.info("没找到会话 %s 在桌面版里的编号，只切到 Claude", session[:8])
+            return
+        try:
+            os.startfile(f"claude://code/continue?session={local}")
+            log.info("已打开会话 %s", local)
+        except OSError as e:
+            log.warning("打开会话失败：%s", e)
 
     def _focus(self, section: str, toggle: bool = True) -> None:
         """唤起目标程序。toggle=True（手柄 +/−）：已经在前台就把它最小化；

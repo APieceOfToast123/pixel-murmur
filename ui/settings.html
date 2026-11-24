@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设置 — Pixel Murmur</title>
+<style>
+  :root {
+    --bg: #161B24; --frame: #2C3546; --text: #EEF1F5; --sub: #9AA6B8; --soft: #C9D2DF;
+    --accent: #E08A5C; --accent-text: #F2B48F; --on-accent: #1A1208;
+    --card: #1E2532; --card-bd: #2A3343; --card2: #232B39;
+    --edit-bg: #2A2420; --edit-bd: #E08A5C; --icon-bg: #2A3242;
+    --seg: #0F131A; --seg-on: #2E3748;
+    --key-bg: #2A3242; --key-bd: #3B4558; --key-shadow: #10141B;
+    --footer: #121720; --line: #2A3343; --ok: #7CD9A8; --err: #FF8A80; --warn: #F5C26B;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    user-select: none; overflow: hidden; }
+  body { display: flex; flex-direction: column; border: 1px solid var(--frame); }
+  button, select { font: inherit; cursor: pointer; color: inherit; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid #6aa2ff; outline-offset: 2px; }
+  code { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11.5px; color: var(--accent-text); }
+  input[type=range] { accent-color: var(--accent); width: 100%; margin: 0; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; }
+  input[type=color] { width: 36px; height: 36px; border: 0; padding: 0; background: transparent; cursor: pointer; }
+
+  .titlebar { height: 34px; flex: none; display: flex; align-items: center; justify-content: space-between; padding-left: 14px; font-size: 12px; color: var(--sub); }
+  .titlebar .win { display: flex; height: 100%; }
+  .titlebar .win button { width: 46px; height: 100%; border: 0; background: transparent; color: var(--sub); }
+  .titlebar .win button:hover { background: #2A3242; color: var(--text); }
+  .titlebar .win button.x:hover { background: #C42B1C; color: #fff; }
+  .head { flex: none; padding: 2px 24px 12px; display: flex; align-items: center; gap: 14px; }
+  .avatar { position: relative; width: 44px; height: 44px; flex: none; border-radius: 12px; background: #222A38; }
+  .avatar i { position: absolute; left: 0; top: 0; width: 3px; height: 3px; }
+  .head h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  .head p { margin: 2px 0 0; font-size: 13px; color: var(--sub); }
+  .tabs { flex: none; padding: 0 24px; display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+  .tabs button { height: 40px; padding: 0 18px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--sub); font-size: 14px; }
+  .tabs button.on { border-bottom-color: var(--accent); color: #fff; font-weight: 600; }
+  .page { flex: 1; min-height: 0; overflow: auto; padding: 16px 24px; display: none; }
+  .page.on { display: block; }
+
+  .seg { display: flex; padding: 3px; gap: 2px; border-radius: 6px; background: var(--seg); align-self: flex-start; }
+  .seg button { height: 30px; padding: 0 14px; border: 0; border-radius: 4px; background: transparent; color: var(--sub); font-size: 13px; }
+  .seg button.on { background: var(--seg-on); color: #fff; }
+  .bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .hint { font-size: 12px; color: var(--sub); }
+  .note { padding: 11px 14px; border-radius: 6px; background: var(--card); border: 1px solid var(--card-bd); font-size: 12px; line-height: 1.8; color: var(--soft); }
+  .note b.t { color: var(--accent-text); }
+  .label { font-size: 13px; color: var(--sub); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { display: flex; justify-content: space-between; font-size: 13px; color: var(--soft); }
+  .btn { height: 32px; padding: 0 14px; border-radius: 4px; border: 1px solid var(--line); background: var(--card2); font-size: 13px; }
+  .btn:hover { border-color: #4A5568; }
+  .btn.pri { border: 0; background: var(--accent); color: var(--on-accent); font-weight: 600; }
+  .btn.pri:disabled { opacity: .45; cursor: default; }
+  .icon-btn { width: 30px; height: 30px; border: 0; border-radius: 4px; background: transparent; color: var(--sub); display: flex; align-items: center; justify-content: center; }
+  .icon-btn:hover { background: #2A3242; color: var(--text); }
+
+  /* 快捷键 */
+  .rows { display: flex; flex-direction: column; gap: 8px; }
+  .row { position: relative; display: grid; grid-template-columns: 34px 150px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 6px; background: var(--card); border: 1px solid var(--card-bd); overflow: hidden; }
+  .row.editing { background: var(--edit-bg); border-color: var(--edit-bd); }
+  .row.bad { border-color: var(--err); }
+  .ico { width: 34px; height: 34px; border-radius: 8px; background: var(--icon-bg); color: var(--accent); display: flex; align-items: center; justify-content: center; }
+  .name b { display: block; font-size: 14px; font-weight: 600; }
+  .name span { font-size: 12px; color: var(--sub); }
+  .keys { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-height: 28px; }
+  .key { display: inline-flex; align-items: center; height: 26px; padding: 0 9px; border-radius: 4px; background: var(--key-bg); border: 1px solid var(--key-bd); box-shadow: inset 0 -2px 0 var(--key-shadow); font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px; color: #F2F4F8; }
+  .listen { font-size: 13px; color: var(--accent-text); display: flex; align-items: center; gap: 8px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+  .msg { font-size: 12px; display: block; margin-top: 3px; }
+  .acts { display: flex; align-items: center; gap: 4px; }
+  .row.editing .edit { background: transparent; border-color: var(--edit-bd); }
+  .progress { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); }
+
+  /* 桌宠 */
+  .petwrap { display: flex; gap: 20px; align-items: flex-start; }
+  .left { width: 280px; flex: none; display: flex; flex-direction: column; gap: 10px; }
+  .stage { position: relative; width: 280px; height: 250px; border-radius: 8px; background-color: #0F131A;
+    background-image: linear-gradient(#171D27 1px, transparent 1px), linear-gradient(90deg, #171D27 1px, transparent 1px);
+    background-size: 16px 16px; border: 1px solid var(--line); overflow: hidden; }
+  .stage .cv { position: absolute; }
+  .stage .cv > * { position: absolute; }
+  .stage .cap { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: var(--sub); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { height: 28px; padding: 0 10px; border-radius: 4px; border: 1px solid var(--line); background: var(--card); color: var(--soft); font-size: 12px; }
+  .chips button.on { border-color: var(--accent); background: var(--seg-on); color: #fff; }
+  .right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+  .chars { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .chars button { height: 60px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
+  .chars button.on { border-color: var(--accent); background: var(--edit-bg); }
+  .chars b { font-size: 14px; } .chars span { font-size: 11px; color: var(--sub); }
+  .swatches { display: flex; align-items: center; gap: 8px; }
+  .swatches button { width: 32px; height: 32px; border-radius: 50%; border: 3px solid #1E2532; }
+  .swatches button.on { border-color: #fff; }
+  .filebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .filename { font-size: 13px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 300px; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .sgrid { display: grid; grid-template-columns: 64px repeat(8, minmax(0, 1fr)); gap: 3px; font-size: 11px; color: var(--sub); }
+  .sgrid i { height: 14px; border-radius: 3px; border: 1px solid var(--line); }
+  .sgrid i.f { background: var(--accent); border-color: var(--accent); }
+  .sgrid span.n { color: var(--soft); }
+  .divider { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+  select { height: 30px; border-radius: 4px; border: 1px solid #3B4558; background: var(--card2); font-size: 13px; }
+
+  /* 提示音 */
+  .vols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 14px 0; }
+  .srow { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 10px 12px; border-radius: 6px; background: var(--card); border: 1px solid var(--card-bd); margin-bottom: 8px; }
+  .srow.custom { border-color: #5A4434; }
+  .srow .src { font-size: 13px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srow.custom .src { color: var(--accent-text); }
+
+  .foot { flex: none; padding: 12px 24px; display: flex; align-items: center; gap: 10px; background: var(--footer); border-top: 1px solid var(--line); }
+  .status { flex: 1; font-size: 13px; color: var(--sub); }
+</style>
+</head>
+<body>
+  <div class="titlebar pywebview-drag-region">
+    <span>Pixel Murmur</span>
+    <div class="win">
+      <button title="最小化" aria-label="最小化" onclick="api().minimize()">—</button>
+      <button class="x" title="关闭" aria-label="关闭" onclick="api().close()">✕</button>
+    </div>
+  </div>
+  <div class="head pywebview-drag-region">
+    <div class="avatar" aria-hidden="true"><i id="avatar"></i></div>
+    <div><h1>设置</h1><p>改完点右下角「保存」立即生效；这里的设置只影响这台电脑</p></div>
+  </div>
+  <div class="tabs" role="tablist">
+    <button data-tab="hotkeys" class="on">快捷键</button>
+    <button data-tab="pet">桌宠</button>
+    <button data-tab="sound">提示音</button>
+  </div>
+
+  <!-- ── 快捷键 ── -->
+  <div class="page on" id="page-hotkeys">
+    <div class="bar">
+      <div class="seg" id="presets" role="group" aria-label="预设方案">
+        <button data-p="pad">手柄方案</button><button data-p="keyboard">键盘方案</button><button data-p="custom">自定义</button>
+      </div>
+      <span class="hint">点「修改」后直接按下想要的组合键</span>
+    </div>
+    <div class="rows" id="rows"></div>
+    <div class="note" style="margin-top: 12px">
+      · 单独一个键只能用 CapsLock、Pause、ScrollLock、Insert、F13–F24，其他键请加上 Ctrl / Alt / Shift，免得拦住平时打字。<br>
+      · 按住说话的键越少越好按。用 CapsLock 说话时它不再切换大小写，打大写请按住 Shift。<br>
+      · 用手柄的话，在手柄的映射软件（如 8BitDo App）里把按键映射成这里的组合键。
+    </div>
+  </div>
+
+  <!-- ── 桌宠 ── -->
+  <div class="page" id="page-pet">
+    <div class="petwrap">
+      <div class="left">
+        <div class="stage"><div class="cv" id="cv"></div><span class="cap" id="animcap"></span></div>
+        <div class="chips" id="anims"></div>
+        <label class="check"><input type="checkbox" id="auto" checked> 自动轮流播放所有动作</label>
+        <div class="note">预览按实际大小的 2 倍显示，桌面上的样子以保存后为准。</div>
+      </div>
+      <div class="right">
+        <div class="field"><span class="label">形象来源</span>
+          <div class="seg" id="sources"><button data-s="builtin">内置角色</button><button data-s="image">我的图片</button><button data-s="sheet">精灵图（多帧）</button></div>
+        </div>
+
+        <div id="src-builtin">
+          <div class="chars" id="chars"></div>
+          <div class="field" style="margin-top: 12px"><span class="label">身体颜色</span>
+            <div class="swatches" id="swatches"></div>
+            <span class="hint">只改身体；描边、眼睛、腮红保持不变，换什么颜色都看得清。</span>
+          </div>
+        </div>
+
+        <div id="src-image" style="display: flex; flex-direction: column; gap: 12px">
+          <div class="filebar"><button class="btn pri" id="pickImage">选择图片…</button><span class="filename" id="imageName"></span></div>
+          <label class="check"><input type="checkbox" id="pixelate"> 像素化（把图缩成格子再放大，变成像素风）</label>
+          <div class="field" id="gridField"><label for="grid"><span>像素格数（越小越「方块」）</span><span id="gridVal"></span></label>
+            <input id="grid" type="range" min="12" max="48" step="4"></div>
+          <div class="note"><b class="t">怎么准备图片</b><br>
+            · 最好是<b>正方形、透明背景</b>的 PNG，主体尽量占满画面；照片、插画、头像都可以。<br>
+            · 白底图片会带着一个白方块：可以先用 Windows 自带的「画图」→「删除背景」抠一下。<br>
+            · 打开像素化，照片也会变成像素风；关掉则按原图缩放（适合本来就是像素画的图）。<br>
+            · 程序会自动给它加动作：呼吸起伏、做完了跳起来、需要你时左右晃、睡觉、被摸头时往下缩；星星、「!」、z、小键盘照常叠在上面。<br>
+            · 图片会复制到 <code>skins\</code> 文件夹，原文件删掉或挪走都没关系；换电脑要重新选。</div>
+        </div>
+
+        <div id="src-sheet" style="display: flex; flex-direction: column; gap: 12px">
+          <div class="filebar"><button class="btn pri" id="pickSheet">选择精灵图…</button>
+            <label class="check" style="gap: 6px">每格 <select id="cell"><option>16</option><option>24</option><option>32</option><option>48</option><option>64</option></select> 像素</label>
+            <span class="filename" id="sheetName"></span></div>
+          <div class="sgrid" id="sgrid"></div>
+          <span class="hint" id="sheetSummary"></span>
+          <div class="note"><b class="t">精灵图怎么画</b><br>
+            · <b>一行一个动作</b>，从上到下：待机、敲键盘、做完了、需要你、在听、睡觉、摸摸头（共 7 行，和上面的表一样）。<br>
+            · <b>一格一帧</b>，从左往右播放，每行最多 8 帧；遇到空格就算这一行结束。哪一行整行空着，就用「待机」那一行代替；待机那行不能空。<br>
+            · 整张图宽 = 格子 × 8，高 = 格子 × 7，<b>透明背景 PNG</b>；每格最外圈 1 像素留空（模板的网格线画在那里，不会被当成画面）。<br>
+            · <b>角色画在格子中间偏下</b>：32×32 的格子里身体约 16×16，上方和两侧留空，给跳起来、冒「!」、冒 z 这些动作用；照着示例的比例画最省事。<br>
+            · 模板：<code>docs\sprite-template.png</code>（32×32 格）；示例：<code>docs\sprite-example.png</code>（团子的全部动作）。用 Aseprite、Piskel 或「画图」打开往格子里画。<br>
+            · 精灵图模式下不再自动加星星、「!」这些效果，全部按你画的来。</div>
+        </div>
+
+        <div class="divider">
+          <div class="field"><label for="ps"><span>大小</span><span id="psVal"></span></label><input id="ps" type="range" min="2" max="6" step="1"></div>
+          <div class="field"><label for="fps"><span>动画速度</span><span id="fpsVal"></span></label><input id="fps" type="range" min="3" max="14" step="1"></div>
+          <div class="field"><label for="sleep"><span>多久没动静就睡觉</span><span id="sleepVal"></span></label><input id="sleep" type="range" min="0" max="30" step="1"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 提示音 ── -->
+  <div class="page" id="page-sound">
+    <div class="note"><b class="t">换成自己的音效</b><br>
+      · 每个提示音都可以换成本地的 <b>WAV 或 MP3</b>，没换的继续用内置合成音。<br>
+      · 建议 <b>0.1–1 秒</b>的短音效：长音会被下一声打断，也容易吵。超过 1.5 秒会提醒你。<br>
+      · 选好的文件会复制到 <code>sounds\</code> 文件夹，原文件删掉也没关系；换电脑要重新选。<br>
+      · 下面的音量对内置音和自定义音都生效；文件本身太响就把滑块调低。试听用的就是保存后的效果。<br>
+      · 免费音效可以在 freesound.org 等网站找，注意看授权。</div>
+    <div class="vols">
+      <div class="field"><label for="vv"><span>语音提示音量（开始 / 结束 / 取消 / 出错）</span><span id="vvVal"></span></label><input id="vv" type="range" min="0" max="1" step="0.01"></div>
+      <div class="field"><label for="pv"><span>桌宠提示音量（做完了 / 需要你）</span><span id="pvVal"></span></label><input id="pv" type="range" min="0" max="1" step="0.05"></div>
+    </div>
+    <div id="srows"></div>
+    <div class="hint" id="beepOff" style="display: none; color: var(--warn)">提示：配置里关掉了语音提示音（[feedback] beep = false），开始 / 结束 / 取消 / 出错这四个现在不会响。</div>
+  </div>
+
+  <div class="foot">
+    <span class="status" id="status"></span>
+    <button class="btn" id="revert">撤销改动</button>
+    <button class="btn pri" id="save">保存</button>
+  </div>
+
+<script>
+const api = () => window.pywebview.api;
+const $ = id => document.getElementById(id);
+const svg = (p, s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const ICONS = {
+  talk: '<rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path>',
+  talk_send: '<path d="M22 2 11 13"></path><path d="M22 2 15 22l-4-9-9-4 20-7z"></path>',
+  cancel: '<circle cx="12" cy="12" r="9"></circle><path d="m15 9-6 6M9 9l6 6"></path>',
+  focus: '<rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 9h18"></path>',
+  focus_wechat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path>'
+};
+const RESET = '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path>';
+const TRASH = '<path d="M4 7h16"></path><path d="M10 11v6M14 11v6"></path><path d="M6 7l1 13h10l1-13"></path><path d="M9 7V4h6v3"></path>';
+
+let S = null, saved = null, toastTimer = null;
+// 当前编辑中的设置（保存时一起发给 Python）
+const D = { hk: {}, preset: 'pad', pet: {}, sounds: {}, soundInfo: {}, voice_vol: 0.08, pet_vol: 0.3 };
+
+function toast(text, ok = true) {
+  const st = $('status');
+  st.style.color = ok ? 'var(--ok)' : 'var(--err)';
+  st.textContent = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastTimer = null; renderFoot(); }, 3000);
+}
+function snapshot() {
+  return JSON.stringify({ hk: D.hk, pet: Object.assign({}, D.pet, { image: D.pet.image && D.pet.image.rel, sheet: D.pet.sheet && D.pet.sheet.rel }),
+    sounds: D.sounds, v: D.voice_vol, p: D.pet_vol });
+}
+
+/* ────────── 快捷键 ────────── */
+const SOLO = new Set(['CapsLock', 'Pause', 'ScrollLock', 'Insert']);
+for (let n = 13; n <= 24; n++) SOLO.add('F' + n);
+const BLOCKED = { 'Ctrl+Space': '这是输入法中英文切换', 'Shift+Space': '这是输入法全角/半角切换', 'Alt+Space': '这是窗口菜单',
+  'Alt+Tab': '这是切换窗口', 'Alt+F4': '这是关闭窗口', 'Ctrl+Shift+Esc': '这是任务管理器', 'Ctrl+Alt+Delete': '这是系统安全界面',
+  'Ctrl+C': '这是复制', 'Ctrl+V': '这是粘贴', 'Ctrl+X': '这是剪切', 'Ctrl+Z': '这是撤销', 'Ctrl+A': '这是全选', 'Ctrl+S': '这是保存' };
+const MODKEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'OS', 'AltGraph']);
+const CODE_MAP = { CapsLock: 'CapsLock', Pause: 'Pause', ScrollLock: 'ScrollLock', Insert: 'Insert', Home: 'Home', End: 'End',
+  PageUp: 'PageUp', PageDown: 'PageDown', Space: 'Space', Enter: 'Enter', Tab: 'Tab', Backquote: '`', Delete: 'Delete',
+  Escape: 'Esc', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' };
+let notes = {}, editing = null, deadline = 0, editTimer = null, checking = false;
+
+function keyName(e) {
+  const c = e.code || '';
+  if (/^Key[A-Z]$/.test(c)) return c.slice(3);
+  if (/^Digit[0-9]$/.test(c)) return c.slice(5);
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(c)) return c;
+  return CODE_MAP[c] || (e.key && e.key.length === 1 ? e.key.toUpperCase() : null);
+}
+function hkInfo(a) {
+  const combo = D.hk[a.id];
+  if (notes[a.id]) return { msg: notes[a.id], color: 'var(--err)', bad: false };
+  if (!combo) return { msg: '', bad: false };
+  const dup = S.actions.find(b => b.id !== a.id && D.hk[b.id] === combo);
+  if (dup) return { msg: `和「${dup.label}」重复了`, color: 'var(--err)', bad: true };
+  if (combo === 'Ctrl+Alt+W') return { msg: '微信自己也用 Ctrl+Alt+W，需在微信设置里关掉', color: 'var(--warn)', bad: false };
+  if (a.hold && combo.split('+').length > 2) return { msg: '要一直按着说话，键越少越好按', color: 'var(--sub)', bad: false };
+  if (a.hold && combo.includes('CapsLock')) return { msg: '占用后 CapsLock 不切大小写，打大写请按住 Shift', color: 'var(--sub)', bad: false };
+  return { msg: '', bad: false };
+}
+function hkBad() { return S.actions.some(a => hkInfo(a).bad); }
+function renderHotkeys() {
+  const rows = $('rows'); rows.innerHTML = '';
+  const remain = Math.max(0, deadline - Date.now());
+  for (const a of S.actions) {
+    const inf = hkInfo(a), combo = D.hk[a.id] || '', ed = editing === a.id;
+    const row = document.createElement('div');
+    row.className = 'row' + (ed ? ' editing' : '') + (inf.bad ? ' bad' : '');
+    const keys = ed ? `<div class="listen"><span class="dot"></span>正在监听… 按下组合键（${Math.ceil(remain / 1000)}s，Esc 取消）</div>`
+      : combo ? combo.split('+').map(k => `<span class="key">${k}</span>`).join('') : '<span class="hint">未设置 · 已停用</span>';
+    row.innerHTML = `<div class="ico">${svg(ICONS[a.id], 18)}</div>
+      <div class="name"><b>${a.label}</b><span>${a.desc}</span></div>
+      <div><div class="keys">${keys}</div>${inf.msg && !ed ? `<span class="msg" style="color:${inf.color}">${inf.msg}</span>` : ''}</div>
+      <div class="acts"><button class="btn edit">${ed ? '取消' : '修改'}</button>
+        <button class="icon-btn reset" title="恢复默认" aria-label="恢复默认">${svg(RESET, 15)}</button>
+        <button class="icon-btn clear" title="清空（停用）" aria-label="清空（停用）">${svg(TRASH, 15)}</button></div>
+      ${ed ? `<div class="progress" style="width:${remain / 50}%"></div>` : ''}`;
+    row.querySelector('.edit').onclick = () => toggleEdit(a.id);
+    row.querySelector('.reset').onclick = () => { stopEdit(); D.hk[a.id] = (D.preset === 'keyboard' ? S.keyboard : S.pad)[a.id]; delete notes[a.id]; renderAll(); };
+    row.querySelector('.clear').onclick = () => { stopEdit(); D.hk[a.id] = ''; delete notes[a.id]; D.preset = 'custom'; renderAll(); };
+    rows.appendChild(row);
+  }
+  document.querySelectorAll('#presets button').forEach(b => b.classList.toggle('on', b.dataset.p === D.preset));
+}
+function toggleEdit(id) {
+  if (editing === id) { stopEdit(); renderAll(); return; }
+  stopEdit(); editing = id; deadline = Date.now() + 5000; api().pause();
+  editTimer = setInterval(() => { if (Date.now() > deadline) { stopEdit(); toast('5 秒内没有按键，已取消录入', false); } renderHotkeys(); renderFoot(); }, 100);
+  renderAll();
+}
+function stopEdit() { if (editing === null) return; editing = null; clearInterval(editTimer); editTimer = null; api().resume(); }
+document.addEventListener('keydown', async e => {
+  if (editing === null) return;
+  e.preventDefault(); e.stopPropagation();
+  if (checking || MODKEYS.has(e.key)) return;
+  const key = keyName(e); if (!key) return;
+  const id = editing;
+  if (key === 'Esc' && !e.ctrlKey && !e.altKey && !e.shiftKey) { stopEdit(); renderAll(); return; }
+  const parts = []; if (e.ctrlKey) parts.push('Ctrl'); if (e.altKey) parts.push('Alt'); if (e.shiftKey) parts.push('Shift'); parts.push(key);
+  const combo = parts.join('+');
+  if (parts.length === 1 && !SOLO.has(key)) notes[id] = `单独的「${key}」会拦住平时打字，请加上 Ctrl / Alt / Shift`;
+  else if (BLOCKED[combo]) notes[id] = `${combo} 不能用：${BLOCKED[combo]}`;
+  else {
+    checking = true; const r = await api().check(combo); checking = false;
+    if (r.ok) { D.hk[id] = combo; delete notes[id]; D.preset = 'custom'; } else notes[id] = r.msg;
+  }
+  stopEdit(); renderAll();
+}, true);
+document.querySelectorAll('#presets button').forEach(b => b.onclick = async () => {
+  const p = b.dataset.p; if (p === 'custom') return;
+  stopEdit(); D.preset = p; notes = {}; D.hk = Object.assign({}, p === 'keyboard' ? S.keyboard : S.pad); renderAll();
+  await api().pause();   // 检查有没有被别的程序占用（先暂停主程序自己的快捷键，免得把自己算进去）
+  for (const a of S.actions) { if (!D.hk[a.id]) continue; const r = await api().check(D.hk[a.id]); if (!r.ok) notes[a.id] = r.msg; }
+  await api().resume(); renderAll();
+});
+
+/* ────────── 桌宠 ────────── */
+const GW = 28, GH = 26, OX = 6, OY = 7;
+const SPRITES = {
+  blob: ["................", "................", "................", ".....oooooo.....", "....obbbbbbo....", "...obbhhbbbbo...", "..obbhbbbbbbbo..", "..obbbbbbbbbbo..", ".obbbebbbbebbbo.", ".obbbebbbbebbbo.", ".obcbbbbbbbbcbo.", ".obbbbbooobbbbo.", ".obbbbbbbbbbbbo.", "..obbbbbbbbbbo..", "...oooooooooo...", "................"],
+  cat: ["................", "..o.........o...", ".obo.......obo..", ".obbo.....obbo..", ".obbbooooobbbo..", ".obbbbbbbbbbbo..", "obbhbbbbbbbbbbo.", "obbebbbbbbebbbo.", "obbebbbbbbebbbo.", "obcbbbbobbbbcbo.", "obbbbbobobbbbbo.", ".obbbbbbbbbbbo..", ".obbbbbbbbbbbo..", "..obbo...obbo...", "..ooo.....ooo...", "................"],
+  bot: [".......o........", ".......y........", "....oooooooo....", "...obbbbbbbbo...", "...obssssssbo...", "...obsesseshbo..", "...obsesseshbo..", "...obssssssbo...", "...obbbbbbbbo...", "....oooooooo....", ".....obbbbo.....", "....obbccbbo....", "...obobbbbobo...", "....obbbbbbo....", "....oo....oo....", "................"]
+};
+const CHARS = [['blob', '团子', '圆滚滚'], ['cat', '小猫', '有耳朵'], ['bot', '小机器人', '屏幕脸']];
+const ANIMS = [['idle', '待机'], ['typing', '敲键盘'], ['celebrate', '做完了'], ['alert', '需要你'], ['listen', '在听'], ['sleep', '睡觉'], ['pat', '摸摸头']];
+const SWATCHES = [['#E08A5C', '陶土橙'], ['#F2C14E', '奶黄'], ['#7CC6A4', '薄荷'], ['#8FB3F0', '天蓝'], ['#F4A6C0', '樱粉']];
+let anim = 'idle', animT0 = Date.now(), pixUrl = '';
+
+function shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16), m = v => Math.max(0, Math.min(255, Math.round(f > 0 ? v + (255 - v) * f : v * (1 + f))));
+  return `rgb(${m((n >> 16) & 255)},${m((n >> 8) & 255)},${m(n & 255)})`;
+}
+function motion(a, el, fps) {
+  const cyc = Math.floor(el * fps); let dx = 0, dy = 0;
+  if (a === 'idle') dy = Math.floor(el * 1.2) % 2;
+  if (a === 'typing') dy = cyc % 2;
+  if (a === 'celebrate') dy = [0, -2, -4, -5, -5, -4, -2, 0, 0, 0][cyc % 10];
+  if (a === 'alert') dx = [0, 1, 0, -1][cyc % 4];
+  if (a === 'sleep') dy = Math.floor(el * 0.8) % 2;
+  if (a === 'pat') dy = [1, 1, 0, 0][cyc % 4];
+  return { cyc, dx, dy };
+}
+function bodyPixels(ch, color, a, el, fps) {
+  const rows = SPRITES[ch], m = motion(a, el, fps), out = [];
+  const pal = { o: '#2a2320', b: color, h: shade(color, 0.45), c: '#F28FA0', e: '#1d1d1d', s: '#16202c', y: '#FFD54A' };
+  if (ch === 'bot') { pal.e = '#5EEAD4'; pal.c = shade(color, -0.35); }
+  const blink = a === 'sleep' || a === 'pat' || (a !== 'celebrate' && (el % 3.2) > 3.0);
+  const eyes = []; rows.forEach((r, y) => { if (r.includes('e')) eyes.push(y); });
+  const filler = ch === 'bot' ? 's' : 'b';
+  rows.forEach((r, y) => [...r].forEach((c, x) => {
+    if (c === '.') return;
+    if (c === 'e') { if (blink) c = y === eyes[eyes.length - 1] ? (ch === 'bot' ? 'e' : 'o') : filler; else if (a === 'celebrate' && y === eyes[0]) c = filler; }
+    out.push([x + m.dx, y + m.dy, pal[c]]);
+  }));
+  return out;
+}
+function overlayPixels(a, el, fps, top, body) {
+  const m = motion(a, el, fps), cyc = m.cyc, out = [], add = (x, y, c) => out.push([x, y, c]);
+  if (a === 'typing') {
+    for (let kx = 2; kx < 14; kx++) { add(kx, 16, '#4b5563'); add(kx, 17, '#374151'); }
+    for (let k = 3; k < 13; k += 2) add(k, 16, ((k + cyc) % 4 === 1) ? '#e5e7eb' : '#9ca3af');
+    const L = cyc % 2 ? 14 : 15, R = cyc % 2 ? 15 : 14; add(4, L, body); add(5, L, body); add(10, R, body); add(11, R, body);
+  }
+  if (a === 'celebrate') [[-2, 3], [17, 2], [-3, 10], [18, 9], [8, -4]].forEach((p, i) => {
+    const c = i % 2 ? '#FFD54A' : '#FFF3B0'; add(p[0], p[1], c);
+    if (cyc % 2 === 0) { add(p[0] - 1, p[1], c); add(p[0] + 1, p[1], c); add(p[0], p[1] - 1, c); add(p[0], p[1] + 1, c); }
+  });
+  if (a === 'alert' && cyc % 6 < 4) {
+    for (let bx = 6; bx <= 10; bx++) { for (let by = -5; by <= 0; by++) add(bx, by, '#ffffff'); add(bx, -6, '#2a2320'); add(bx, 1, '#2a2320'); }
+    for (let by = -5; by <= 0; by++) { add(5, by, '#2a2320'); add(11, by, '#2a2320'); }
+    [-4, -3, -2, 0].forEach(y => add(8, y, '#E5484D'));
+  }
+  if (a === 'listen') for (let w = 0; w <= cyc % 3; w++) for (let wy = 6 - w; wy <= 9 + w; wy++) { add(-1 - w * 2, wy, '#E5484D'); add(16 + w * 2, wy, '#E5484D'); }
+  if (a === 'sleep') { const zy = -2 - (cyc % 4); [[13, zy], [14, zy], [15, zy], [16, zy], [15, zy + 1], [14, zy + 2], [13, zy + 3], [14, zy + 3], [15, zy + 3], [16, zy + 3]].forEach(p => add(p[0], p[1], '#cbd5e1')); }
+  if (a === 'pat') {
+    const hx = 4 + [0, 1, 2, 1][cyc % 4], hy = top - 3 + m.dy;
+    ['.oooo.', 'oSSSSo', 'oSSSSo', '.oooo.'].forEach((line, py) => [...line].forEach((c, px) => { if (c !== '.') add(hx + px, hy + py, c === 'S' ? '#FFD6BA' : '#2a2320'); }));
+    if (cyc >= 2) { const rise = Math.min(Math.floor((cyc - 2) / 2), 4, top + OY - 5);
+      [[1, 0], [3, 0], [0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [1, 2], [2, 2], [3, 2], [2, 3]].forEach(p => add(12 + p[0], top - 5 - rise + p[1], '#FF698C')); }
+  }
+  return out;
+}
+const toShadow = (pix, cell) => pix.filter(p => p[0] + OX >= 0 && p[0] + OX < GW && p[1] + OY >= 0 && p[1] + OY < GH)
+  .map(p => `${(p[0] + OX) * cell}px ${(p[1] + OY) * cell}px 0 0 ${p[2]}`).join(',') || 'none';
+
+function repixel() {
+  const im = D.pet.image; pixUrl = '';
+  if (!im) return;
+  const img = new Image();
+  img.onload = () => {
+    const n = D.pet.grid, c = document.createElement('canvas'); c.width = n; c.height = n;
+    const g = c.getContext('2d'), k = Math.min(n / img.width, n / img.height);
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(img, (n - img.width * k) / 2, (n - img.height * k) / 2, img.width * k, img.height * k);
+    pixUrl = c.toDataURL('image/png');
+  };
+  img.src = im.dataUrl;
+}
+function drawPreview() {
+  const P = D.pet, cell = P.pixel_size * 2, el = (Date.now() - animT0) / 1000, cv = $('cv');
+  const W = GW * cell, H = GH * cell;
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  cv.style.left = Math.round((280 - W) / 2) + 'px'; cv.style.top = Math.round((250 - H) / 2) + 6 + 'px';
+  const m = motion(anim, el, P.fps), disp = 16 * cell;
+  let html = '';
+  if (P.source === 'builtin') {
+    const top = SPRITES[P.character].findIndex(r => r.replace(/\./g, ''));
+    html += `<div style="left:0;top:0;width:${cell}px;height:${cell}px;box-shadow:${toShadow(bodyPixels(P.character, P.body_color, anim, el, P.fps), cell)}"></div>`;
+    html += `<div style="left:0;top:0;width:${cell}px;height:${cell}px;box-shadow:${toShadow(overlayPixels(anim, el, P.fps, top, P.body_color), cell)}"></div>`;
+  } else if (P.source === 'image') {
+    if (P.image) {
+      const src = P.pixelate ? (pixUrl || P.image.dataUrl) : P.image.dataUrl;
+      const sq = anim === 'pat' && m.dy ? 'scaleY(0.92)' : 'none';
+      html += `<img alt="" src="${src}" style="left:${(OX + m.dx) * cell}px;top:${(OY + m.dy) * cell}px;width:${disp}px;height:${disp}px;object-fit:contain;image-rendering:${P.pixelate ? 'pixelated' : 'auto'};transform:${sq};transform-origin:50% 100%">`;
+    }
+    html += `<div style="left:0;top:0;width:${cell}px;height:${cell}px;box-shadow:${toShadow(overlayPixels(anim, el, P.fps, 0, '#E9D8C8'), cell)}"></div>`;
+  } else if (P.source === 'sheet' && P.sheet) {
+    const sh = P.sheet, ai = ANIMS.findIndex(a => a[0] === anim), row = sh.frames[ai] ? ai : 0, n = sh.frames[row] || 1;
+    // 一格显示成 32×32 个像素格，格子 (2,3) 对齐画布左上角（和程序里的 SHEET_UNITS / SHEET_ORIGIN 一致）
+    const fr = Math.floor(el * P.fps) % n, unit = 32 * cell, k = unit / sh.cell;
+    html += `<div style="left:${-2 * cell}px;top:${-3 * cell}px;width:${unit}px;height:${unit}px;background:url(${sh.dataUrl}) no-repeat;background-size:${sh.w * k}px ${sh.h * k}px;background-position:${-fr * unit}px ${-row * unit}px;image-rendering:pixelated"></div>`;
+  }
+  cv.innerHTML = html;
+  $('animcap').textContent = '预览：' + ANIMS.find(a => a[0] === anim)[1] + (P.source !== 'builtin' && !(P.image || P.sheet) ? '（还没选文件）' : '');
+}
+function renderPet() {
+  const P = D.pet;
+  document.querySelectorAll('#sources button').forEach(b => b.classList.toggle('on', b.dataset.s === P.source));
+  ['builtin', 'image', 'sheet'].forEach(s => $('src-' + s).style.display = P.source === s ? '' : 'none');
+  $('chars').innerHTML = CHARS.map(c => `<button data-c="${c[0]}" class="${P.character === c[0] ? 'on' : ''}"><b>${c[1]}</b><span>${c[2]}</span></button>`).join('');
+  $('chars').querySelectorAll('button').forEach(b => b.onclick = () => { P.character = b.dataset.c; renderAll(); });
+  $('swatches').innerHTML = SWATCHES.map(w => `<button data-h="${w[0]}" aria-label="${w[1]}" style="background:${w[0]}" class="${P.body_color.toUpperCase() === w[0] ? 'on' : ''}"></button>`).join('')
+    + `<label class="hint" style="display:flex;align-items:center;gap:6px"><input type="color" id="custColor" value="${P.body_color}" aria-label="自定义颜色"> 自定义</label>`;
+  $('swatches').querySelectorAll('button').forEach(b => b.onclick = () => { P.body_color = b.dataset.h; renderAll(); });
+  $('custColor').onchange = e => { P.body_color = e.target.value.toUpperCase(); renderAll(); };
+  $('imageName').textContent = P.image ? `${P.image.name}${P.image.w ? `（${P.image.w}×${P.image.h}）` : ''}` : '还没选图片';
+  $('pixelate').checked = P.pixelate; $('gridField').style.display = P.pixelate ? '' : 'none';
+  $('grid').value = P.grid; $('gridVal').textContent = `${P.grid} × ${P.grid}`;
+  $('cell').value = String(P.sheet_cell);
+  $('sheetName').textContent = P.sheet ? `${P.sheet.name}（${P.sheet.w}×${P.sheet.h}）` : '还没选精灵图';
+  const fr = P.sheet ? P.sheet.frames : [0, 0, 0, 0, 0, 0, 0];
+  $('sgrid').innerHTML = '<span></span>' + [1, 2, 3, 4, 5, 6, 7, 8].map(i => `<span>帧${i}</span>`).join('')
+    + ANIMS.map((a, r) => `<span class="n">${a[1]}</span>` + [0, 1, 2, 3, 4, 5, 6, 7].map(c => `<i class="${c < fr[r] ? 'f' : ''}"></i>`).join('')).join('');
+  $('sheetSummary').textContent = P.sheet ? '识别结果：' + ANIMS.map((a, r) => `${a[1]} ${fr[r] || '空→用待机'}`).join('，')
+    : '选好精灵图后，这里会显示每个动作识别出几帧。';
+  $('ps').value = P.pixel_size; $('psVal').textContent = `桌面上约 ${Math.round(16 * P.pixel_size * devicePixelRatio)} 像素高`;
+  $('fps').value = P.fps; $('fpsVal').textContent = `${P.fps} 帧/秒`;
+  $('sleep').value = P.sleep_minutes; $('sleepVal').textContent = P.sleep_minutes ? `${P.sleep_minutes} 分钟` : '不睡觉';
+  $('anims').innerHTML = ANIMS.map(a => `<button data-a="${a[0]}" class="${a[0] === anim ? 'on' : ''}">${a[1]}</button>`).join('');
+  $('anims').querySelectorAll('button').forEach(b => b.onclick = () => { anim = b.dataset.a; animT0 = Date.now(); $('auto').checked = false; renderPet(); });
+}
+document.querySelectorAll('#sources button').forEach(b => b.onclick = () => { D.pet.source = b.dataset.s; renderAll(); });
+$('pixelate').onchange = e => { D.pet.pixelate = e.target.checked; renderAll(); };
+$('grid').oninput = e => { D.pet.grid = +e.target.value; repixel(); renderAll(); };
+$('ps').oninput = e => { D.pet.pixel_size = +e.target.value; renderAll(); };
+$('fps').oninput = e => { D.pet.fps = +e.target.value; renderAll(); };
+$('sleep').oninput = e => { D.pet.sleep_minutes = +e.target.value; renderAll(); };
+$('pickImage').onclick = async () => {
+  const r = await api().pick_image(); if (!r) return;
+  if (r.error) { toast(r.error, false); return; }
+  D.pet.image = r; repixel(); renderAll();
+  toast(r.w !== r.h ? `已选 ${r.name}：不是正方形，会居中放进方框里，两边留空` : `已选 ${r.name}`);
+};
+$('pickSheet').onclick = async () => {
+  const r = await api().pick_sheet(D.pet.sheet_cell); if (!r) return;
+  if (r.error) { toast(r.error, false); return; }
+  D.pet.sheet = r; renderAll();
+  if (!r.frames[0]) toast('第一行「待机」是空的：精灵图至少要画待机那一行。检查一下「每格」大小选对没有', false);
+  else if (r.w % D.pet.sheet_cell || r.h % D.pet.sheet_cell) toast(`图片 ${r.w}×${r.h} 不是 ${D.pet.sheet_cell} 的整数倍，「每格」大小可能选错了`, false);
+  else toast(`已选 ${r.name}`);
+};
+$('cell').onchange = async e => {
+  D.pet.sheet_cell = +e.target.value;
+  if (D.pet.sheet) { D.pet.sheet.frames = await api().scan_sheet(D.pet.sheet.rel, D.pet.sheet_cell); D.pet.sheet.cell = D.pet.sheet_cell; }
+  renderAll();
+};
+setInterval(() => {
+  if ($('auto').checked && Date.now() - animT0 > 2200) {
+    const i = ANIMS.findIndex(a => a[0] === anim); anim = ANIMS[(i + 1) % ANIMS.length][0]; animT0 = Date.now(); renderPet();
+  }
+  if (S && $('page-pet').classList.contains('on')) drawPreview();
+}, 60);
+
+/* ────────── 提示音 ────────── */
+function renderSounds() {
+  $('vv').value = D.voice_vol; $('vvVal').textContent = Math.round(D.voice_vol * 100) + '%';
+  $('pv').value = D.pet_vol; $('pvVal').textContent = Math.round(D.pet_vol * 100) + '%';
+  $('beepOff').style.display = S.beep_on ? 'none' : '';
+  const box = $('srows'); box.innerHTML = '';
+  for (const s of S.sounds) {
+    const f = D.soundInfo[s.id];
+    let warn = '';
+    if (f && f.dur > 1.5) warn = `有点长（${f.dur.toFixed(1)} 秒），建议 1 秒以内，长音会被下一声打断`;
+    else if (f && f.size > 2 * 1024 * 1024) warn = `文件比较大（${(f.size / 1048576).toFixed(1)} MB），提示音一般几十 KB 就够了`;
+    const row = document.createElement('div');
+    row.className = 'srow' + (f ? ' custom' : '');
+    row.innerHTML = `<div class="name"><b>${s.label}</b><span>${s.when}</span></div>
+      <div style="min-width:0"><div class="src">${f ? `自定义：${f.name}${f.dur != null ? `（${f.dur.toFixed(2)} 秒）` : ''}` : s.def}</div>
+        ${warn ? `<span class="msg" style="color:var(--warn)">${warn}</span>` : ''}</div>
+      <div class="acts"><button class="btn play">试听</button><button class="btn pick">选择文件…</button>
+        <button class="icon-btn reset" title="恢复默认音" aria-label="恢复默认音">${svg(RESET, 15)}</button></div>`;
+    row.querySelector('.play').onclick = () => api().play_sound(s.id, D.sounds[s.id] || '', D.voice_vol, D.pet_vol);
+    row.querySelector('.pick').onclick = async () => {
+      const r = await api().pick_sound(s.id); if (!r) return;
+      if (r.error) { toast(r.error, false); return; }
+      D.sounds[s.id] = r.rel; D.soundInfo[s.id] = r; renderAll();
+      api().play_sound(s.id, r.rel, D.voice_vol, D.pet_vol);
+    };
+    row.querySelector('.reset').onclick = () => { D.sounds[s.id] = ''; delete D.soundInfo[s.id]; renderAll(); };
+    box.appendChild(row);
+  }
+}
+$('vv').oninput = e => { D.voice_vol = +e.target.value; renderAll(); };
+$('pv').oninput = e => { D.pet_vol = +e.target.value; renderAll(); };
+
+/* ────────── 公共 ────────── */
+function renderFoot() {
+  if (toastTimer || !S) return;
+  const bad = hkBad(), dirty = snapshot() !== saved, st = $('status');
+  st.style.color = bad ? 'var(--err)' : 'var(--sub)';
+  st.textContent = bad ? '有重复的快捷键，改好后才能保存' : dirty ? '有改动还没保存'
+    : S.app_running ? '这是当前生效的设置' : 'Pixel Murmur 没在运行，保存后下次启动生效';
+  $('save').disabled = bad || !dirty || editing !== null;
+}
+function renderAll() { renderHotkeys(); renderPet(); renderSounds(); renderFoot(); }
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  stopEdit();
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('on', p.id === 'page-' + b.dataset.tab));
+  renderAll();
+});
+function load(st) {
+  S = st; notes = {};
+  D.hk = Object.assign({}, st.current); D.preset = st.preset;
+  D.pet = Object.assign({}, st.pet); D.voice_vol = st.voice_vol; D.pet_vol = st.pet_vol;
+  D.sounds = {}; D.soundInfo = {};
+  for (const s of st.sounds) { D.sounds[s.id] = s.file ? s.file.rel : ''; if (s.file) D.soundInfo[s.id] = s.file; }
+  repixel(); saved = snapshot(); renderAll();
+}
+$('revert').onclick = async () => { stopEdit(); load(await api().state()); toast('已撤销未保存的改动'); };
+$('save').onclick = async () => {
+  if (D.pet.source === 'image' && !D.pet.image) { toast('选了「我的图片」但还没选图片', false); return; }
+  if (D.pet.source === 'sheet' && !(D.pet.sheet && D.pet.sheet.frames[0])) { toast('选了「精灵图」但还没选好（或待机那行是空的）', false); return; }
+  const P = D.pet;
+  const r = await api().save({ hotkeys: D.hk, sounds: D.sounds, voice_vol: D.voice_vol, pet_vol: D.pet_vol,
+    pet: { source: P.source, character: P.character, body_color: P.body_color, pixel_size: P.pixel_size, fps: P.fps,
+      sleep_minutes: P.sleep_minutes, pixelate: P.pixelate, grid: P.grid, sheet_cell: P.sheet_cell,
+      image: P.image ? P.image.rel : '', sheet: P.sheet ? P.sheet.rel : '' } });
+  if (!r.ok) { toast(r.msg, false); return; }
+  saved = snapshot(); S.app_running = r.applied;
+  toast(r.applied ? '已保存，立即生效' : '已保存，下次启动 Pixel Murmur 时生效');
+  renderAll();
+};
+(function () {   // 像素团子头像
+  const pal = { o: '#2a2320', b: '#E08A5C', h: '#F2BFA2', c: '#F28FA0', e: '#1d1d1d' }, sh = [];
+  SPRITES.blob.forEach((r, y) => [...r].forEach((c, x) => { if (c !== '.') sh.push(`${x * 3}px ${(y - 2) * 3}px 0 0 ${pal[c]}`); }));
+  $('avatar').style.boxShadow = sh.join(',');
+})();
+window.addEventListener('pywebviewready', async () => load(await api().state()));
+</script>
+</body>
+</html>

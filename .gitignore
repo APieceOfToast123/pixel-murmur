@@ -9,3 +9,7 @@ __pycache__/
 # 本机设置和状态
 config.local.toml
 ui_state.json
+
+# 用户在设置窗口里选的图片和提示音（复制进来的副本）
+skins/
+sounds/

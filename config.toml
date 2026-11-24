@@ -61,8 +61,15 @@ recording_color = "#E5484D"   # 录音中的颜色；右键菜单「录音颜色
 
 [pet]
 # 像素桌宠。事件来自 Claude Code 钩子（~/.claude/settings.json 里调用 pet_hook.py）。
-character = "blob"            # blob 团子 / cat 小猫 / bot 小机器人
-body_color = "#E08A5C"        # 身体颜色
+# 外观最方便在右键菜单「设置…」→「桌宠」页里改，改完写进 config.local.toml。
+source = "builtin"            # builtin 内置角色 / image 我的图片 / sheet 精灵图
+image = ""                    # source = image 时的图片，相对程序目录（设置窗口会复制到 skins/）
+pixelate = true               # 我的图片：是否像素化
+grid = 24                     # 我的图片：像素化的格数（12–48）
+sheet = ""                    # source = sheet 时的精灵图（7 行动作 × 最多 8 帧，见 docs/sprite-template.png）
+sheet_cell = 32               # 精灵图每格的像素大小
+character = "blob"            # 内置角色：blob 团子 / cat 小猫 / bot 小机器人
+body_color = "#E08A5C"        # 内置角色的身体颜色
 pixel_size = 4                # 一个像素块的大小（逻辑像素），建议 2–6；角色本身 16×16
 fps = 8                       # 动画速度（帧/秒），建议 4–12
 sound_volume = 0.3            # 桌宠提示音音量 0–1
@@ -73,6 +80,16 @@ done_bubble = true            # 做完时气泡显示回复开头
 alert = true                  # 需要确认时提醒（头顶冒「!」，点一下桌宠消失）
 typing = true                 # 干活时敲键盘
 sleep = true                  # 闲置时睡觉
+
+[sounds]
+# 自定义提示音（WAV / MP3），相对程序目录；留空 = 用内置合成音。
+# 最方便在右键菜单「设置…」→「提示音」页里选，文件会复制到 sounds/。
+start = ""                    # 开始录音
+stop = ""                     # 结束录音
+cancel = ""                   # 取消
+error = ""                    # 出错
+done = ""                     # Claude 做完了
+alert = ""                    # Claude 需要你确认
 
 [focus]
 process_names = ["claude.exe"]

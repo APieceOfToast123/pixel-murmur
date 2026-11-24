@@ -122,6 +122,12 @@ DEFAULTS: dict = {
         "recording_color": "#E5484D",
     },
     "pet": {
+        "source": "builtin",        # builtin 内置角色 / image 我的图片 / sheet 精灵图
+        "image": "",                # source = image 时的图片（相对程序目录，如 skins/xxx.png）
+        "pixelate": True,
+        "grid": 24,
+        "sheet": "",                # source = sheet 时的精灵图
+        "sheet_cell": 32,
         "character": "blob",
         "body_color": "#E08A5C",
         "pixel_size": 4,
@@ -134,6 +140,7 @@ DEFAULTS: dict = {
         "sleep": True,
         "sleep_minutes": 5,
     },
+    "sounds": {"start": "", "stop": "", "cancel": "", "error": "", "done": "", "alert": ""},
     "focus": {"process_names": ["claude.exe"], "title_contains": "", "launch": ""},
     "focus_wechat": {"process_names": ["weixin.exe", "wechat.exe"], "title_contains": "",
                      "launch": ""},
@@ -729,23 +736,105 @@ def play_wav(data: bytes) -> None:
                      daemon=True).start()
 
 
-class Beeper:
-    """开始 / 结束 / 取消 / 出错提示音。自己合成波形，所以时长、音量、双音都可调。"""
+SOUND_IDS = ("start", "stop", "cancel", "error", "done", "alert")
+VOICE_SOUNDS = ("start", "stop", "cancel", "error")   # 受 [feedback] beep 开关和 beep_volume 控制
+SOUNDS_DIR = BASE / "sounds"   # 用户选的提示音复制到这里（不上传）
+SKINS_DIR = BASE / "skins"     # 用户选的桌宠图片 / 精灵图复制到这里（不上传）
+_mci_seq = 0
+_mci_lock = threading.Lock()
 
-    def __init__(self, fc: dict):
-        self.enabled = bool(fc["beep"]) and IS_WIN
-        vol, ms, two = float(fc["beep_volume"]), float(fc["beep_ms"]), bool(fc["beep_two_tone"])
+
+def _mci(cmd: str) -> tuple[int, str]:
+    buf = ctypes.create_unicode_buffer(256)
+    err = ctypes.windll.winmm.mciSendStringW(cmd, buf, 255, None)
+    return err, buf.value
+
+
+def play_file(path: Path, volume: float) -> None:
+    """后台播放一个 WAV / MP3 文件（用系统自带的 MCI，不需要额外的库）。volume 0..1。"""
+    global _mci_seq
+    with _mci_lock:
+        _mci_seq += 1
+        alias = f"pm{_mci_seq}"
+
+    def run():
+        err, _ = _mci(f'open "{path}" type mpegvideo alias {alias}')
+        if err:
+            log.warning("播放提示音失败（%s）：%s", err, path)
+            return
+        _mci(f"setaudio {alias} volume to {int(min(max(volume, 0.0), 1.0) * 1000)}")
+        _mci(f"play {alias} wait")
+        _mci(f"close {alias}")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def sound_duration(path: Path) -> float | None:
+    """音频文件时长（秒）；读不出来返回 None。"""
+    try:
+        if path.suffix.lower() == ".wav":
+            import wave
+            with wave.open(str(path), "rb") as w:
+                return w.getnframes() / float(w.getframerate())
+        alias = "pmlen"
+        if _mci(f'open "{path}" type mpegvideo alias {alias}')[0]:
+            return None
+        try:
+            _mci(f"set {alias} time format milliseconds")
+            err, val = _mci(f"status {alias} length")
+            return int(val) / 1000 if not err and val.isdigit() else None
+        finally:
+            _mci(f"close {alias}")
+    except Exception:
+        return None
+
+
+def resolve_user_file(rel: str) -> Path | None:
+    """config 里存的是相对程序目录的路径（如 sounds/done.mp3）；文件不在了就当没设置。"""
+    if not rel:
+        return None
+    p = Path(rel)
+    p = p if p.is_absolute() else BASE / p
+    return p if p.exists() else None
+
+
+class SoundBank:
+    """全部 6 个提示音。没换文件的用内置合成音（时长、音量、双音都可调），换了的播放文件。"""
+
+    def __init__(self, cfg: dict):
+        fc, pc, sc = cfg["feedback"], cfg["pet"], cfg["sounds"]
+        self.voice_on = bool(fc["beep"]) and IS_WIN
+        self.voice_vol = min(max(float(fc["beep_volume"]), 0.0), 1.0)
+        self.pet_vol = min(max(float(pc["sound_volume"]), 0.0), 1.0) * 0.25  # 方波听起来更响，打个折
+        ms, two = float(fc["beep_ms"]), bool(fc["beep_two_tone"])
         f1, f2 = float(fc["beep_start_hz"]), float(fc["beep_stop_hz"])
+        v = self.voice_vol
         self._wavs = {
-            "start": _tone_wav([f1 * 0.75, f1] if two else [f1], ms, vol),  # 上扬
-            "stop": _tone_wav([f2, f2 * 0.75] if two else [f2], ms, vol),   # 下降
-            "cancel": _tone_wav([440], 90, vol),
-            "error": _tone_wav([300], 220, vol),
+            "start": _tone_wav([f1 * 0.75, f1] if two else [f1], ms, v),  # 上扬
+            "stop": _tone_wav([f2, f2 * 0.75] if two else [f2], ms, v),   # 下降
+            "cancel": _tone_wav([440], 90, v),
+            "error": _tone_wav([300], 220, v),
+            "done": _tone_wav([784, 988, 1319], 330, self.pet_vol, wave_shape="chip"),  # 上行三连音
+            "alert": _tone_wav([1047, 784], 360, self.pet_vol, wave_shape="chip"),      # 下行叮咚
         }
+        self.files = {i: resolve_user_file(str(sc.get(i) or "")) for i in SOUND_IDS}
+        for i in SOUND_IDS:
+            if sc.get(i) and not self.files[i]:
+                log.warning("提示音文件不见了，改用内置音：%s = %s", i, sc.get(i))
 
-    def __call__(self, kind: str) -> None:
-        if self.enabled:
-            play_wav(self._wavs[kind])  # SND_MEMORY 不能异步播放，所以放到线程里同步播
+    def volume(self, sid: str) -> float:
+        return self.voice_vol if sid in VOICE_SOUNDS else self.pet_vol
+
+    def play(self, sid: str) -> None:
+        if sid in VOICE_SOUNDS and not self.voice_on:
+            return
+        f = self.files.get(sid)
+        if f:
+            play_file(f, self.volume(sid))
+        else:
+            play_wav(self._wavs[sid])  # SND_MEMORY 不能异步播放，play_wav 里放到线程同步播
+
+    __call__ = play  # 兼容原来的 self.beep("start") 写法
 
 
 # ───────────────────────────── 悬浮窗 ─────────────────────────────
@@ -927,6 +1016,59 @@ _PET_SPRITES = {
 PET_GW, PET_GH, PET_OX, PET_OY = 28, 26, 6, 7
 
 
+ANIM_ORDER = ["idle", "typing", "celebrate", "alert", "listen", "sleep", "pat"]  # 也是精灵图的行顺序
+ANIM_NAMES = ["待机", "敲键盘", "做完了", "需要你", "在听", "睡觉", "摸摸头"]
+SHEET_UNITS = 32          # 精灵图一格显示成 32×32 个像素格（和内置角色同一比例）
+SHEET_ORIGIN = (2, 3)     # 格子里 (2, 3) 处对应桌宠画布的左上角（28×26 的画布居中放在格子里）
+
+
+def _fit_square(img, n: int, resample):
+    """把图片按比例缩进 n×n 的透明方框，居中。"""
+    from PIL import Image
+    w, h = img.size
+    k = min(n / w, n / h)
+    nw, nh = max(1, round(w * k)), max(1, round(h * k))
+    out = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    out.alpha_composite(img.resize((nw, nh), resample), ((n - nw) // 2, (n - nh) // 2))
+    return out
+
+
+def scan_sprite_sheet(img, cell: int) -> list[int]:
+    """精灵图每一行（动作）有几帧：从左往右数，遇到空格就停。
+    判断空格时忽略每格最外圈 1 像素，模板里的网格线不会被当成画面。"""
+    a = np.asarray(img.convert("RGBA"))[..., 3]
+    frames = []
+    for r in range(len(ANIM_ORDER)):
+        n = 0
+        for c in range(8):
+            y0, x0 = r * cell, c * cell
+            if y0 + cell > a.shape[0] or x0 + cell > a.shape[1]:
+                break
+            if not (a[y0 + 1:y0 + cell - 1, x0 + 1:x0 + cell - 1] > 16).any():
+                break
+            n += 1
+        frames.append(n)
+    return frames
+
+
+def load_sprite_sheet(img, cell: int) -> list[list]:
+    """切出每个动作的帧（每格裁掉最外圈 1 像素的网格线后再放回原尺寸）。"""
+    frames = scan_sprite_sheet(img, cell)
+    rows = []
+    for r, n in enumerate(frames):
+        row = []
+        for c in range(n):
+            f = img.crop((c * cell, r * cell, (c + 1) * cell, (r + 1) * cell)).copy()
+            # 抹掉最外圈，去掉模板网格线
+            px = f.load()
+            for i in range(cell):
+                for p in ((i, 0), (i, cell - 1), (0, i), (cell - 1, i)):
+                    px[p] = (0, 0, 0, 0)
+            row.append(f)
+        rows.append(row)
+    return rows
+
+
 def _shade(rgb, f: float) -> tuple[int, int, int]:
     """f > 0 变亮（向白色靠），f < 0 变暗。"""
     return tuple(max(0, min(255, round(v + (255 - v) * f if f > 0 else v * (1 + f)))) for v in rgb)
@@ -946,21 +1088,14 @@ class Overlay:
     TEXT, SUBTEXT = (242, 242, 242), (169, 169, 169)
     BUSY, DONE, ERROR, INFO = (245, 165, 36), (61, 214, 140), (185, 140, 255), (61, 214, 140)
 
-    def __init__(self, cfg: dict, on_quit, on_click=None):
+    def __init__(self, cfg: dict, on_quit, on_click=None, sounds: "SoundBank | None" = None):
         self.cfg = cfg
-        oc, pc = cfg["overlay"], cfg["pet"]
+        oc = cfg["overlay"]
         self.scale = float(oc["scale"])
         self.opacity = min(max(float(oc["opacity"]), 0.0), 1.0)
         self.color = _hex_rgb(oc["recording_color"])
-        self.pet_char = pc["character"] if pc["character"] in _PET_SPRITES else "blob"
-        self.pet_color = _hex_rgb(pc["body_color"], (224, 138, 92))
-        self.pet_ps = max(1, int(pc["pixel_size"]))
-        self.pet_fps = max(1.0, float(pc["fps"]))
-        self.pet_opt = {k: bool(pc[k]) for k, _ in self.PET_OPTS}
-        self.sleep_minutes = float(pc["sleep_minutes"])
-        vol = min(max(float(pc["sound_volume"]), 0.0), 1.0) * 0.25
-        self._snd_done = _tone_wav([784, 988, 1319], 330, vol, wave_shape="chip")   # 上行三连音
-        self._snd_alert = _tone_wav([1047, 784], 360, vol, wave_shape="chip")       # 下行叮咚
+        self.sounds = sounds or SoundBank(cfg)
+        self.apply_pet_config(cfg["pet"])
         self.on_quit = on_quit
         self.on_click = on_click
         self.on_command = None          # App 设置：处理设置窗口发来的指令
@@ -995,6 +1130,58 @@ class Overlay:
         except Exception:
             log.warning("未安装 Pillow，不显示悬浮窗")
             self.enabled = False
+
+    # ── 桌宠外观 ──
+
+    def apply_pet_config(self, pc: dict) -> None:
+        """读 [pet] 配置：内置角色 / 我的图片 / 精灵图，以及大小、速度、提醒开关。可在运行中重新调用。"""
+        self.pet_char = pc["character"] if pc["character"] in _PET_SPRITES else "blob"
+        self.pet_color = _hex_rgb(pc["body_color"], (224, 138, 92))
+        self.pet_ps = max(1, int(pc["pixel_size"]))
+        self.pet_fps = max(1.0, float(pc["fps"]))
+        self.pet_opt = {k: bool(pc[k]) for k, _ in self.PET_OPTS}
+        self.sleep_minutes = float(pc["sleep_minutes"])
+        self.pet_source = "builtin"
+        self._skin_img = None            # 我的图片：原图（RGBA）
+        self._sheet = None               # 精灵图：[[帧, ...] 每个动作一行]
+        self._skin_cache: dict = {}
+        src = pc.get("source", "builtin")
+        try:
+            if src == "image":
+                path = resolve_user_file(str(pc.get("image") or ""))
+                if path:
+                    from PIL import Image
+                    self._skin_img = Image.open(path).convert("RGBA")
+                    self.pet_pixelate = bool(pc.get("pixelate", True))
+                    self.pet_grid = max(8, int(pc.get("grid", 24)))
+                    self.pet_source = "image"
+                else:
+                    log.warning("桌宠图片不见了，改用内置角色：%s", pc.get("image"))
+            elif src == "sheet":
+                path = resolve_user_file(str(pc.get("sheet") or ""))
+                if path:
+                    from PIL import Image
+                    cell = max(4, int(pc.get("sheet_cell", 32)))
+                    self._sheet = load_sprite_sheet(Image.open(path).convert("RGBA"), cell)
+                    if self._sheet[0]:
+                        self.pet_source = "sheet"
+                    else:
+                        log.warning("精灵图第一行（待机）是空的，改用内置角色：%s", path)
+                else:
+                    log.warning("精灵图不见了，改用内置角色：%s", pc.get("sheet"))
+        except Exception:
+            log.exception("读取桌宠形象失败，改用内置角色")
+            self.pet_source = "builtin"
+        self._dirty = True
+
+    def reload(self, cfg: dict) -> None:
+        """设置窗口保存后：换上新的外观、提示音、录音颜色（主线程调用）。"""
+        self.cfg = cfg
+        self.color = _hex_rgb(cfg["overlay"]["recording_color"])
+        self.sounds = SoundBank(cfg)
+        self.apply_pet_config(cfg["pet"])
+        self._last_key = None
+        self._render(force=True)
 
     # ── 给其他线程用的接口（只改字段） ──
 
@@ -1039,7 +1226,7 @@ class Overlay:
             if name == "Stop":
                 self._celebrate_until = now + 2.2
                 if self.pet_opt["done_sound"]:
-                    play_wav(self._snd_done)
+                    self.sounds.play("done")
                 if self.pet_opt["done_bubble"]:
                     self._bubble = ((ev.get("text") or "").strip() or "做好了！", now + 5, "done")
         elif name == "Notification":
@@ -1049,7 +1236,7 @@ class Overlay:
                 (not kind and "permission" in text)
             if needs_you and self.pet_opt["alert"]:
                 self._alert_until = now + 600
-                play_wav(self._snd_alert)
+                self.sounds.play("alert")
                 self._bubble = ("需要你确认一下", self._alert_until, "alert")
         self._dirty = True
 
@@ -1252,7 +1439,7 @@ class Overlay:
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(menu, MF_STRING, 4, "查看用量")
         user32.AppendMenuW(menu, MF_POPUP, sub, "录音颜色")
-        user32.AppendMenuW(menu, MF_STRING, 5, "快捷键设置…")
+        user32.AppendMenuW(menu, MF_STRING, 5, "设置…（快捷键 / 桌宠 / 提示音）")
         user32.AppendMenuW(menu, MF_STRING, 1, "复位到右下角")
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(menu, MF_STRING, 2, "打开配置文件")
@@ -1407,13 +1594,8 @@ class Overlay:
         self._ax, self._ay = -min_x, -min_y
         self._blit(canvas, self._anchor[0] - self._ax, self._anchor[1] - self._ay)
 
-    def _pet_pixels(self, anim: str, el: float) -> list:
-        rows = _PET_SPRITES[self.pet_char]
-        body = self.pet_color
-        pal = {"o": (42, 35, 32), "b": body, "h": _shade(body, 0.45), "c": (242, 143, 160),
-               "e": (29, 29, 29), "s": (22, 32, 44), "y": (255, 213, 74)}
-        if self.pet_char == "bot":
-            pal["e"], pal["c"] = (94, 234, 212), _shade(body, -0.35)
+    def _motion(self, anim: str, el: float) -> tuple[int, int, int]:
+        """每个动作的整体位移：(帧序号, dx, dy)，单位是像素格。"""
         cyc = int(el * self.pet_fps)
         dx = dy = 0
         if anim == "idle":
@@ -1428,22 +1610,38 @@ class Overlay:
             dy = int(el * 0.8) % 2
         elif anim == "pat":
             dy = [1, 1, 0, 0][cyc % 4]                     # 被拍一下就往下缩一点
-        blink = anim in ("sleep", "pat") or (anim != "celebrate" and (el % 3.2) > 3.0)
-        eye_rows = [y for y, r in enumerate(rows) if "e" in r]
-        filler = "s" if self.pet_char == "bot" else "b"
+        return cyc, dx, dy
+
+    def _pet_pixels(self, anim: str, el: float, with_body: bool = True) -> list:
+        """内置角色的像素 + 叠加效果（键盘、星星、「!」、声波、小手、z）。
+        with_body=False 时只要叠加效果（「我的图片」模式下身体用图片画）。"""
+        cyc, dx, dy = self._motion(anim, el)
         out = []
-        for y, r in enumerate(rows):
-            for x, ch in enumerate(r):
-                if ch == ".":
-                    continue
-                if ch == "e":
-                    if blink:
-                        # 闭眼：只留一条线（小机器人的屏幕是深色，线保持亮色才看得见）
-                        closed = "e" if self.pet_char == "bot" else "o"
-                        ch = closed if y == eye_rows[-1] else filler
-                    elif anim == "celebrate" and y == eye_rows[0]:
-                        ch = filler                                    # 开心：眯眼
-                out.append((x + dx, y + dy, pal[ch]))
+        if with_body:
+            rows = _PET_SPRITES[self.pet_char]
+            body = self.pet_color
+            pal = {"o": (42, 35, 32), "b": body, "h": _shade(body, 0.45), "c": (242, 143, 160),
+                   "e": (29, 29, 29), "s": (22, 32, 44), "y": (255, 213, 74)}
+            if self.pet_char == "bot":
+                pal["e"], pal["c"] = (94, 234, 212), _shade(body, -0.35)
+            blink = anim in ("sleep", "pat") or (anim != "celebrate" and (el % 3.2) > 3.0)
+            eye_rows = [y for y, r in enumerate(rows) if "e" in r]
+            filler = "s" if self.pet_char == "bot" else "b"
+            for y, r in enumerate(rows):
+                for x, ch in enumerate(r):
+                    if ch == ".":
+                        continue
+                    if ch == "e":
+                        if blink:
+                            # 闭眼：只留一条线（小机器人的屏幕是深色，线保持亮色才看得见）
+                            closed = "e" if self.pet_char == "bot" else "o"
+                            ch = closed if y == eye_rows[-1] else filler
+                        elif anim == "celebrate" and y == eye_rows[0]:
+                            ch = filler                                    # 开心：眯眼
+                    out.append((x + dx, y + dy, pal[ch]))
+            top = next(y for y, r in enumerate(rows) if r.strip("."))     # 头顶那一行
+        else:
+            body, top = (233, 216, 200), 0                                 # 图片：爪子用中性色
 
         def add(x, y, c):
             out.append((x, y, c))
@@ -1486,7 +1684,6 @@ class Overlay:
                     add(-1 - w * 2, wy, self.color)
                     add(16 + w * 2, wy, self.color)
         elif anim == "pat":
-            top = next(y for y, r in enumerate(rows) if r.strip("."))   # 头顶那一行
             ink, skin = (42, 35, 32), (255, 214, 186)
             hx = 4 + [0, 1, 2, 1][cyc % 4]                  # 小手左右来回摸
             hy = top - 3 + dy                               # 手掌最下面一行压在头顶上
@@ -1511,12 +1708,51 @@ class Overlay:
     def _draw_pet(self, anim: str, el: float, s: int):
         from PIL import Image, ImageDraw
         img = Image.new("RGBA", (PET_GW * s, PET_GH * s), (0, 0, 0, 0))
+        size = 16 * s                                   # 身体占 16×16 格
+        if self.pet_source == "sheet":
+            # 精灵图：按你画的帧播放，不叠加效果；这一行是空的就用「待机」那一行。
+            # 格子中间 16×16 是身体，四周留给跳起来、冒「!」这些动作——和模板、示例的画法一致。
+            row = self._sheet[ANIM_ORDER.index(anim)] or self._sheet[0]
+            frame = row[int(el * self.pet_fps) % len(row)]
+            key = ("sheet", id(frame), s)
+            if key not in self._skin_cache:
+                big = frame.resize((SHEET_UNITS * s, SHEET_UNITS * s), Image.NEAREST)
+                ox, oy = SHEET_ORIGIN
+                self._skin_cache[key] = big.crop((ox * s, oy * s, ox * s + PET_GW * s, oy * s + PET_GH * s))
+            img.alpha_composite(self._skin_cache[key], (0, 0))
+            return img
+        if self.pet_source == "image":
+            _, dx, dy = self._motion(anim, el)
+            body = self._skin_body(size)
+            if anim == "pat" and dy:                    # 被拍时往下压扁一点
+                squashed = body.resize((size, round(size * 0.92)), Image.NEAREST)
+                img.alpha_composite(squashed, ((PET_OX + dx) * s, (PET_OY + dy) * s + size - squashed.height))
+            else:
+                img.alpha_composite(body, ((PET_OX + dx) * s, (PET_OY + dy) * s))
+            pixels = self._pet_pixels(anim, el, with_body=False)
+        else:
+            pixels = self._pet_pixels(anim, el)
         dr = ImageDraw.Draw(img)
-        for x, y, c in self._pet_pixels(anim, el):
+        for x, y, c in pixels:
             gx, gy = x + PET_OX, y + PET_OY
             if 0 <= gx < PET_GW and 0 <= gy < PET_GH:
                 dr.rectangle((gx * s, gy * s, gx * s + s - 1, gy * s + s - 1), fill=c + (255,))
         return img
+
+    def _skin_body(self, size: int):
+        """「我的图片」缩放到 size×size（保持比例居中）；开了像素化就先缩成格子再放大。"""
+        from PIL import Image
+        key = ("image", size, self.pet_pixelate, self.pet_grid)
+        if key not in self._skin_cache:
+            src = self._skin_img
+            if self.pet_pixelate:
+                small = _fit_square(src, self.pet_grid, Image.LANCZOS)
+                body = small.resize((size, size), Image.NEAREST)
+            else:
+                body = _fit_square(src, size, Image.LANCZOS)
+            self._skin_cache = {k: v for k, v in self._skin_cache.items() if k[0] != "image"}
+            self._skin_cache[key] = body
+        return self._skin_cache[key]
 
     def _draw_bubble(self, k: float, text: str):
         from PIL import Image, ImageDraw
@@ -1678,8 +1914,8 @@ class App:
         self._cancel = threading.Event()
         self._generation = 0  # 每次“取消”加一，用来作废还在转写的结果
         self._main_tid = kernel32.GetCurrentThreadId()
-        self.beep = Beeper(cfg["feedback"])
-        self.overlay = Overlay(cfg, self.quit, lambda: self._focus("focus", toggle=False))
+        self.beep = SoundBank(cfg)
+        self.overlay = Overlay(cfg, self.quit, lambda: self._focus("focus", toggle=False), self.beep)
         self.overlay.on_command = self._command
         self._hotkeys: dict[int, tuple[str, int]] = {}
         self._paused_at = 0.0           # 设置窗口录入新快捷键期间暂停全部快捷键
@@ -1772,9 +2008,21 @@ class App:
             self._paused_at = 0.0
             log.info("快捷键已更新")
             self._register_hotkeys()
+        elif cmd == "reload_settings":
+            # 设置窗口保存后：快捷键、桌宠外观、提示音、音量一起换上，不用重启
+            new = load_config()
+            for section in ("hotkeys", "pet", "sounds", "feedback", "overlay"):
+                self.cfg[section] = new[section]
+            self._unregister_hotkeys()
+            self._paused_at = 0.0
+            self._register_hotkeys()
+            self.overlay.reload(self.cfg)
+            self.beep = self.overlay.sounds
+            log.info("设置已更新：桌宠=%s，自定义提示音=%s", self.cfg["pet"].get("source"),
+                     [k for k, v in self.cfg["sounds"].items() if v] or "无")
         elif cmd == "open_settings":
             pythonw = Path(sys.executable).with_name("pythonw.exe")
-            subprocess.Popen([str(pythonw), str(Path(__file__).resolve()), "--hotkey-settings"],
+            subprocess.Popen([str(pythonw), str(Path(__file__).resolve()), "--settings"],
                              cwd=str(BASE))
 
     # ── CapsLock 当快捷键 ──
@@ -2175,9 +2423,10 @@ def _find_wechat() -> str:
     return next((p for p in _WECHAT_GUESSES if Path(p).exists()), "")
 
 
-# ───────────────────────────── 快捷键设置窗口 ─────────────────────────────
-# 独立进程（--hotkey-settings），用 pywebview 显示 ui/hotkeys.html。
+# ───────────────────────────── 设置窗口 ─────────────────────────────
+# 独立进程（--settings），用 pywebview 显示 ui/settings.html：快捷键 / 桌宠 / 提示音 三个页签。
 # 录入新组合键时通过 WM_COPYDATA 让主程序暂停快捷键，否则按下的组合会被主程序截走。
+# 保存后发 reload_settings，主程序不用重启就换上新设置。
 
 HOTKEY_ACTIONS = [
     ("talk", "说话", "按住说，松开粘贴", True),
@@ -2191,7 +2440,18 @@ PAD_PRESET = {"talk": "ctrl+alt+shift+f9", "talk_send": "ctrl+alt+shift+f10",
               "focus_wechat": "ctrl+alt+shift+f11"}
 KEYBOARD_PRESET = {"talk": "capslock", "talk_send": "shift+capslock", "cancel": "ctrl+capslock",
                    "focus": "ctrl+alt+c", "focus_wechat": "ctrl+alt+w"}
-SETTINGS_TITLE = "快捷键设置 — Pixel Murmur"
+SOUND_INFO = [  # id, 名字, 什么时候响, 内置音的说明
+    ("start", "开始录音", "按下说话键时", "内置：上扬双音"),
+    ("stop", "结束录音", "松开说话键时", "内置：下降双音"),
+    ("cancel", "取消", "按取消键时", "内置：短低音"),
+    ("error", "出错", "没录到声音、录音失败时", "内置：长低音"),
+    ("done", "做完了", "Claude 回答完时", "内置：上行三连音"),
+    ("alert", "需要你确认", "Claude 等你批准时", "内置：叮咚"),
+]
+SETTINGS_TITLE = "设置 — Pixel Murmur"
+IMAGE_TYPES = ("图片 (*.png;*.jpg;*.jpeg;*.webp;*.gif)",)
+SHEET_TYPES = ("PNG 精灵图 (*.png)",)
+AUDIO_TYPES = ("音频 (*.wav;*.mp3)",)
 
 
 def send_to_app(obj: dict) -> bool:
@@ -2215,25 +2475,89 @@ def write_hotkeys(mapping: dict) -> None:
             write_config_value("hotkeys", action, json.dumps(mapping[action].lower()))
 
 
-class HotkeySettingsApi:
-    """给 ui/hotkeys.html 调用的接口（pywebview js_api）。"""
+def _toml_value(v) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(round(v, 4)) if isinstance(v, float) else str(v)
+    return json.dumps(str(v), ensure_ascii=False)
+
+
+def _copy_into(folder: Path, src: Path, prefix: str = "") -> str:
+    """把用户选的文件复制进程序目录（skins/ 或 sounds/），返回相对路径。原文件之后删掉也没关系。"""
+    import shutil
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^\w\-]+", "_", src.stem)[:40] or "file"
+    dst = folder / f"{prefix}{stem}-{time.strftime('%Y%m%d%H%M%S')}{src.suffix.lower()}"
+    shutil.copyfile(src, dst)
+    return dst.relative_to(BASE).as_posix()
+
+
+def _data_url(path: Path, max_side: int = 0) -> str:
+    """给设置窗口预览用：图片转成 data URL（可选缩小，避免太大的图拖慢窗口）。"""
+    import base64
+    from PIL import Image
+    img = Image.open(path).convert("RGBA")
+    if max_side and max(img.size) > max_side:
+        img.thumbnail((max_side, max_side), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+class SettingsApi:
+    """给 ui/settings.html 调用的接口（pywebview js_api）。
+    注意：pywebview 会把公开属性暴露给网页，窗口对象必须放在下划线开头的属性里。"""
 
     def __init__(self):
-        self.window = None
+        self._window = None
+
+    # ── 读取 ──
 
     def state(self) -> dict:
-        cur = load_config()["hotkeys"]
+        cfg = load_config()
+        cur, pc, sc, fc = cfg["hotkeys"], cfg["pet"], cfg["sounds"], cfg["feedback"]
         current = {a: hotkey_display(cur.get(a) or "") for a, _, _, _ in HOTKEY_ACTIONS}
         norm = {a: (cur.get(a) or "").lower().replace(" ", "") for a, _, _, _ in HOTKEY_ACTIONS}
         preset = "pad" if norm == PAD_PRESET else "keyboard" if norm == KEYBOARD_PRESET else "custom"
+        image = sheet = None
+        p = resolve_user_file(str(pc.get("image") or ""))
+        if p:
+            image = {"rel": pc["image"], "name": p.name, "dataUrl": _data_url(p, 512)}
+        p = resolve_user_file(str(pc.get("sheet") or ""))
+        if p:
+            sheet = self._sheet_info(p, pc["sheet"], int(pc.get("sheet_cell", 32)))
+        sounds = []
+        for sid, label, when, default in SOUND_INFO:
+            f = resolve_user_file(str(sc.get(sid) or ""))
+            sounds.append({"id": sid, "label": label, "when": when, "def": default,
+                           "group": "voice" if sid in VOICE_SOUNDS else "pet",
+                           "file": {"rel": sc[sid], "name": f.name, "dur": sound_duration(f),
+                                    "size": f.stat().st_size} if f else None})
         return {
             "actions": [{"id": a, "label": l, "desc": d, "hold": h} for a, l, d, h in HOTKEY_ACTIONS],
             "current": current,
             "pad": {a: hotkey_display(s) for a, s in PAD_PRESET.items()},
             "keyboard": {a: hotkey_display(s) for a, s in KEYBOARD_PRESET.items()},
             "preset": preset,
+            "pet": {"source": pc.get("source", "builtin"), "character": pc["character"],
+                    "body_color": pc["body_color"], "pixel_size": int(pc["pixel_size"]),
+                    "fps": float(pc["fps"]), "sleep_minutes": float(pc["sleep_minutes"]),
+                    "pixelate": bool(pc.get("pixelate", True)), "grid": int(pc.get("grid", 24)),
+                    "sheet_cell": int(pc.get("sheet_cell", 32)), "image": image, "sheet": sheet},
+            "sounds": sounds,
+            "voice_vol": float(fc["beep_volume"]), "pet_vol": float(pc["sound_volume"]),
+            "beep_on": bool(fc["beep"]),
             "app_running": bool(user32.FindWindowW("PixelMurmurOverlay", None)),
         }
+
+    def _sheet_info(self, path: Path, rel: str, cell: int) -> dict:
+        from PIL import Image
+        img = Image.open(path)
+        return {"rel": rel, "name": path.name, "w": img.width, "h": img.height, "cell": cell,
+                "frames": scan_sprite_sheet(img, cell), "dataUrl": _data_url(path)}
+
+    # ── 快捷键 ──
 
     def pause(self) -> None:
         send_to_app({"cmd": "pause_hotkeys"})
@@ -2255,27 +2579,103 @@ class HotkeySettingsApi:
                                         "它本身就能唤起微信，可以直接清空这一项"}
         return {"ok": False, "msg": f"{hotkey_display(combo)} 已被别的程序占用，换一个吧"}
 
-    def save(self, mapping: dict) -> dict:
+    # ── 选文件 ──
+
+    def _pick(self, types) -> Path | None:
+        import webview
+        kind = getattr(getattr(webview, "FileDialog", None), "OPEN", None) or webview.OPEN_DIALOG
+        res = self._window.create_file_dialog(kind, allow_multiple=False, file_types=types)
+        if not res:
+            return None
+        return Path(res[0] if isinstance(res, (list, tuple)) else res)
+
+    def pick_image(self) -> dict | None:
+        src = self._pick(IMAGE_TYPES)
+        if not src:
+            return None
         try:
-            write_hotkeys(mapping)
+            from PIL import Image
+            with Image.open(src) as im:
+                w, h = im.size
+            rel = _copy_into(SKINS_DIR, src, "image-")
+            return {"rel": rel, "name": src.name, "w": w, "h": h, "dataUrl": _data_url(BASE / rel, 512)}
         except Exception as e:
-            log.exception("保存快捷键失败")
+            return {"error": f"读不出这张图片：{src.name}（{e}）"}
+
+    def pick_sheet(self, cell: int) -> dict | None:
+        src = self._pick(SHEET_TYPES)
+        if not src:
+            return None
+        try:
+            rel = _copy_into(SKINS_DIR, src, "sheet-")
+            return self._sheet_info(BASE / rel, rel, int(cell))
+        except Exception as e:
+            return {"error": f"读不出这张精灵图：{src.name}（{e}）"}
+
+    def scan_sheet(self, rel: str, cell: int) -> list[int]:
+        from PIL import Image
+        p = resolve_user_file(rel)
+        return scan_sprite_sheet(Image.open(p), int(cell)) if p else [0] * len(ANIM_ORDER)
+
+    def pick_sound(self, sid: str) -> dict | None:
+        src = self._pick(AUDIO_TYPES)
+        if not src:
+            return None
+        if src.suffix.lower() not in (".wav", ".mp3"):
+            return {"error": f"只支持 WAV 和 MP3：「{src.name}」不行"}
+        dur = sound_duration(src)
+        if dur is None:
+            return {"error": f"读不出这个文件，可能已损坏或不是音频：{src.name}"}
+        rel = _copy_into(SOUNDS_DIR, src, f"{sid}-")
+        return {"rel": rel, "name": src.name, "dur": dur, "size": src.stat().st_size}
+
+    def play_sound(self, sid: str, rel: str, voice_vol: float, pet_vol: float) -> None:
+        """试听：用和主程序完全一样的方式播放（同一套合成音、同一个音量换算）。"""
+        cfg = load_config()
+        cfg["feedback"]["beep_volume"] = voice_vol
+        cfg["feedback"]["beep"] = True
+        cfg["pet"]["sound_volume"] = pet_vol
+        cfg["sounds"] = {k: "" for k in SOUND_IDS}
+        cfg["sounds"][sid] = rel or ""
+        SoundBank(cfg).play(sid)
+
+    # ── 保存 ──
+
+    def save(self, data: dict) -> dict:
+        try:
+            write_hotkeys(data.get("hotkeys", {}))
+            pet = data.get("pet", {})
+            for key in ("source", "character", "body_color", "pixel_size", "fps", "sleep_minutes",
+                        "pixelate", "grid", "image", "sheet", "sheet_cell"):
+                if key in pet:
+                    write_config_value("pet", key, _toml_value(pet[key]))
+            for sid, rel in data.get("sounds", {}).items():
+                if sid in SOUND_IDS:
+                    write_config_value("sounds", sid, _toml_value(rel or ""))
+            if "voice_vol" in data:
+                write_config_value("feedback", "beep_volume", _toml_value(float(data["voice_vol"])))
+            if "pet_vol" in data:
+                write_config_value("pet", "sound_volume", _toml_value(float(data["pet_vol"])))
+        except Exception as e:
+            log.exception("保存设置失败")
             return {"ok": False, "msg": f"保存失败：{e}"}
-        running = send_to_app({"cmd": "reload_hotkeys"})
-        log.info("快捷键设置已保存：%s", mapping)
+        running = send_to_app({"cmd": "reload_settings"})
+        log.info("设置已保存")
         return {"ok": True, "applied": running}
 
+    # ── 窗口 ──
+
     def minimize(self) -> None:
-        if self.window:
-            self.window.minimize()
+        if self._window:
+            self._window.minimize()
 
     def close(self) -> None:
         self.resume()
-        if self.window:
-            self.window.destroy()
+        if self._window:
+            self._window.destroy()
 
 
-def cmd_hotkey_settings() -> None:
+def cmd_settings() -> None:
     mutex = kernel32.CreateMutexW(None, False, "Local\\PixelMurmurSettings")
     if ctypes.get_last_error() == 183:  # 已经开着：切到前台就好
         hwnd = user32.FindWindowW(None, SETTINGS_TITLE)
@@ -2284,10 +2684,10 @@ def cmd_hotkey_settings() -> None:
         return
     _ = mutex
     import webview
-    api = HotkeySettingsApi()
+    api = SettingsApi()
     api._window = webview.create_window(
-        SETTINGS_TITLE, url=str(BASE / "ui" / "hotkeys.html"), js_api=api,
-        width=640, height=680, resizable=False, frameless=True, easy_drag=False,
+        SETTINGS_TITLE, url=str(BASE / "ui" / "settings.html"), js_api=api,
+        width=880, height=780, resizable=False, frameless=True, easy_drag=False,
         background_color="#161B24")
     try:
         webview.start()
@@ -2305,7 +2705,7 @@ def _choose_input_style() -> None:
         choice = ""
     if choice == "2":
         write_hotkeys(KEYBOARD_PRESET)
-        print("  已套用键盘方案，之后可在桌宠右键菜单「快捷键设置…」里改。")
+        print("  已套用键盘方案，之后可在桌宠右键菜单「设置…」里改。")
     else:
         print("  使用手柄方案（Ctrl+Alt+Shift+F 键），在手柄的映射软件里把按键映射成这些组合。")
 
@@ -2320,7 +2720,7 @@ def cmd_setup(cfg: dict) -> None:
     if interactive:
         _choose_input_style()
     else:
-        print("  （不是在命令行窗口里运行，跳过；默认手柄方案，可在「快捷键设置…」里改）")
+        print("  （不是在命令行窗口里运行，跳过；默认手柄方案，可在桌宠右键菜单「设置…」里改）")
     print("\n1. 麦克风")
     if interactive:
         _choose_microphone(cfg)
@@ -2347,7 +2747,7 @@ def cmd_setup(cfg: dict) -> None:
     subprocess.Popen([str(pythonw), str(Path(__file__).resolve())], cwd=str(BASE))
     print("  已在后台启动（已经在运行的话这次会自动退出）。第一次启动会下载约 160 MB 的模型。")
     print("\n完成。用手柄的话，在手柄的映射软件里确认按键映射后就能用；"
-          "快捷键随时可以在桌宠右键菜单「快捷键设置…」里改。")
+          "快捷键随时可以在桌宠右键菜单「设置…」里改。")
 
 
 def main() -> None:
@@ -2357,7 +2757,7 @@ def main() -> None:
     ap.add_argument("--install-autostart", action="store_true")
     ap.add_argument("--remove-autostart", action="store_true")
     ap.add_argument("--setup", action="store_true", help="新电脑一键设置")
-    ap.add_argument("--hotkey-settings", action="store_true", help="打开快捷键设置窗口")
+    ap.add_argument("--settings", "--hotkey-settings", action="store_true", dest="settings", help="打开设置窗口")
     args = ap.parse_args()
 
     setup_logging()
@@ -2373,8 +2773,8 @@ def main() -> None:
         return cmd_autostart(args.install_autostart)
     if args.setup:
         return cmd_setup(cfg)
-    if args.hotkey_settings:
-        return cmd_hotkey_settings()
+    if args.settings:
+        return cmd_settings()
 
     # 单实例
     mutex = kernel32.CreateMutexW(None, False, "Local\\PixelMurmur")

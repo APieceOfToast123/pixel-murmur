@@ -18,7 +18,7 @@ focus_wechat = "ctrl+alt+shift+f11"   # −：唤起微信；已在前台时再�
 # 每台电脑不同，写在 config.local.toml 里（--setup 会让你选）；
 # 也可以运行 python pixel_murmur.py --list-devices 查看名字。
 device = ""
-fallback_to_default = false   # 找不到上面的设备时，是否退回系统默认麦克风
+fallback_to_default = true    # 找不到上面的设备时改用系统默认麦克风（桌宠旁会提示）
 max_seconds = 120             # 最长录音时间，防止松开信号丢失
 min_seconds = 0.3             # 短于这个时长视为误触
 trim_head = 0.15              # 开头裁掉的秒数（按键咔哒声、提示音）

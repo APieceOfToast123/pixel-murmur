@@ -83,7 +83,7 @@ DEFAULTS: dict = {
     },
     "audio": {
         "device": "",
-        "fallback_to_default": False,
+        "fallback_to_default": True,   # 指定的麦克风找不到时改用系统默认麦克风
         "max_seconds": 120,
         "min_seconds": 0.3,
         "trim_head": 0.15,
@@ -2017,6 +2017,85 @@ def find_input_device(name: str, refresh: bool = False) -> dict | None:
             return None
 
 
+_SKIP_INPUTS = ("microsoft 声音映射器", "microsoft sound mapper", "主声音捕获驱动程序",
+                "primary sound capture driver")
+
+
+def list_input_devices() -> list[str]:
+    """设置窗口用：现在能用的输入设备名字（去重，优先 WASAPI 的完整名字）。"""
+    import sounddevice as sd
+    with _pa_lock:
+        sd._terminate()
+        sd._initialize()
+        apis = sd.query_hostapis()
+        devs = [d for d in sd.query_devices() if d["max_input_channels"] > 0]
+    devs.sort(key=lambda d: _API_RANK.get(apis[d["hostapi"]]["name"], 9))
+    names: list[str] = []
+    for d in devs:
+        n = d["name"].strip()
+        if not n or n.lower().startswith(_SKIP_INPUTS) or "@System32" in n:
+            continue
+        # MME 的名字会被截到 31 个字符，是 WASAPI 名字的前缀，算同一个设备
+        if any(o.lower().startswith(n.lower()) or n.lower().startswith(o.lower()) for o in names):
+            continue
+        names.append(n)
+    return names
+
+
+class MicTester:
+    """设置窗口的「试听 3 秒」：在后台线程开麦克风，网页轮询音量。"""
+
+    def __init__(self):
+        self.level = 0.0
+        self.peak = 0.0
+        self.running = False
+        self.error = ""
+        self.name = ""
+
+    def start(self, device: str, seconds: float = 3.0) -> None:
+        if self.running:
+            return
+        self.level = self.peak = 0.0
+        self.error = self.name = ""
+        self.running = True
+        threading.Thread(target=self._run, args=(device, seconds), daemon=True).start()
+
+    def _run(self, device: str, seconds: float) -> None:
+        import numpy as np
+        import sounddevice as sd
+        com_ok = IS_WIN and ole32.CoInitializeEx(None, COINIT_MULTITHREADED) >= 0
+        try:
+            dev = find_input_device(device, refresh=True)
+            if dev is None:
+                raise RuntimeError(f"找不到「{device or '系统默认麦克风'}」")
+            self.name = dev["name"]
+
+            def cb(indata, frames, t, status):
+                rms = float(np.sqrt(np.mean(np.square(indata))))
+                self.level = rms
+                self.peak = max(self.peak, rms)
+
+            with _pa_lock:
+                stream = sd.InputStream(device=dev["index"], samplerate=int(dev["default_samplerate"]),
+                                        channels=min(int(dev["max_input_channels"]), 2),
+                                        dtype="float32", callback=cb)
+                stream.start()
+            try:
+                time.sleep(seconds)
+            finally:
+                with _pa_lock:
+                    stream.stop()
+                    stream.close()
+        except Exception as e:
+            self.error = str(e)
+            log.warning("试听麦克风失败：%s", e)
+        finally:
+            self.level = 0.0
+            self.running = False
+            if com_ok:
+                ole32.CoUninitialize()
+
+
 # ───────────────────────────── 主程序 ─────────────────────────────
 
 class App:
@@ -2034,6 +2113,7 @@ class App:
         self.overlay.on_command = self._command
         self._hotkeys: dict[int, tuple[str, int]] = {}
         self._paused_at = 0.0           # 设置窗口录入新快捷键期间暂停全部快捷键
+        self._last_mic = ""             # 上次实际用的麦克风名字
 
     # ── 生命周期 ──
 
@@ -2126,13 +2206,14 @@ class App:
         elif cmd == "reload_settings":
             # 设置窗口保存后：快捷键、桌宠外观、提示音、音量一起换上，不用重启
             new = load_config()
-            for section in ("hotkeys", "pet", "sounds", "feedback", "overlay"):
+            for section in ("hotkeys", "pet", "sounds", "feedback", "overlay", "audio"):
                 self.cfg[section] = new[section]
             self._unregister_hotkeys()
             self._paused_at = 0.0
             self._register_hotkeys()
             self.overlay.reload(self.cfg)
             self.beep = self.overlay.sounds
+            self._last_mic = ""          # 麦克风设置可能换了，下次录音重新报一次
             log.info("设置已更新：桌宠=%s，自定义提示音=%s", self.cfg["pet"].get("source"),
                      [k for k, v in self.cfg["sounds"].items() if v] or "无")
         elif cmd == "reset_position":
@@ -2235,7 +2316,9 @@ class App:
         except Exception as e:
             log.error("录音失败：%s", e)
             self.overlay.set("idle")
-            self.overlay.message("录音失败，见日志")
+            # 找不到 / 打不开麦克风这类原因直接显示出来，其他的看日志
+            msg = str(e) if isinstance(e, RuntimeError) and "麦克风" in str(e) else "录音失败，见日志"
+            self.overlay.message(msg.split("：")[0][:30], "error", 6.0)
             self.beep("error")
             return
         finally:
@@ -2252,25 +2335,56 @@ class App:
         self.overlay.set("busy")
         self.jobs.put(("transcribe", audio, sr, send, timed_out, generation, vk))
 
-    def _open_stream(self, callback):
-        import sounddevice as sd
+    def _pick_device(self, refresh: bool) -> tuple[dict, bool]:
+        """按配置找麦克风；找不到且允许回退时改用系统默认。返回 (设备, 是否用了回退)。"""
         ac = self.cfg["audio"]
-        dev = find_input_device(ac["device"])
-        if dev is None:
-            dev = find_input_device(ac["device"], refresh=True)  # 可能是刚插上
-        if dev is None and ac["device"] and ac["fallback_to_default"]:
+        want = ac["device"]
+        dev = find_input_device(want, refresh=refresh)
+        if dev is None and not refresh:
+            dev = find_input_device(want, refresh=True)   # 可能是刚插上，PortAudio 要重新枚举才看得到
+        if dev is not None:
+            return dev, False
+        if want and ac.get("fallback_to_default", True):
             dev = find_input_device("")
-            if dev:
-                log.warning("没找到“%s”，改用默认输入：%s", ac["device"], dev["name"])
-        if dev is None:
-            raise RuntimeError(f"找不到麦克风“{ac['device'] or '系统默认输入'}”")
-        sr = int(dev["default_samplerate"])
-        channels = min(int(dev["max_input_channels"]), 2)
-        with _pa_lock:
-            stream = sd.InputStream(device=dev["index"], samplerate=sr, channels=channels,
-                                    dtype="float32", callback=callback)
-            stream.start()
-        return stream, sr
+            if dev is not None:
+                return dev, True
+        if want:
+            raise RuntimeError(f"找不到麦克风「{want}」" +
+                               ("" if ac.get("fallback_to_default", True) else "，可以在设置里换一个"))
+        raise RuntimeError("找不到可用的麦克风")
+
+    def _open_stream(self, callback):
+        """打开麦克风。失败时（常见于换了麦克风、设备编号过期）刷新设备列表再试一次。"""
+        import sounddevice as sd
+        last_err = None
+        for attempt in (0, 1):
+            dev, fallback = self._pick_device(refresh=attempt == 1)
+            sr = int(dev["default_samplerate"])
+            channels = min(int(dev["max_input_channels"]), 2)
+            try:
+                with _pa_lock:
+                    stream = sd.InputStream(device=dev["index"], samplerate=sr, channels=channels,
+                                            dtype="float32", callback=callback)
+                    stream.start()
+            except Exception as e:
+                last_err = e
+                if attempt == 0:
+                    log.warning("打开麦克风「%s」失败（%s），刷新设备列表后重试", dev["name"], e)
+                continue
+            self._announce_mic(dev["name"], fallback)
+            return stream, sr
+        raise RuntimeError(f"打不开麦克风「{dev['name']}」：{last_err}")
+
+    def _announce_mic(self, name: str, fallback: bool) -> None:
+        """实际用的麦克风换了就记一笔；是回退到默认麦克风时在桌宠旁边提示一下。"""
+        if name == self._last_mic:
+            return
+        self._last_mic = name
+        if fallback:
+            log.warning("没找到麦克风「%s」，改用系统默认：%s", self.cfg["audio"]["device"], name)
+            self.overlay.message(f"改用默认麦克风：{name}"[:30], "info", 6.0)
+        else:
+            log.info("使用麦克风：%s", name)
 
     def _record(self, vk: int):
         """返回 (音频, 采样率, 是否超时)；被取消则返回 None。"""
@@ -2389,6 +2503,11 @@ class App:
         if dev is not None:
             log.info("麦克风：%s", dev["name"])
             return
+        if ac["device"] and ac.get("fallback_to_default", True):
+            dev = find_input_device("")
+            if dev is not None:
+                self._announce_mic(dev["name"], True)
+                return
         text = f"找不到麦克风“{ac['device']}”，会自动重试"
         log.warning(text)
         self.overlay.message("找不到麦克风，自动重试中", "error", 8.0)
@@ -2705,6 +2824,7 @@ class SettingsApi:
 
     def __init__(self):
         self._window = None
+        self._mic = MicTester()
 
     # ── 读取 ──
 
@@ -2745,6 +2865,7 @@ class SettingsApi:
                       "replacements": [[str(k), str(v)] for k, v in cfg["replacements"].items()]},
             "vocab_default": self._vocab_default(),
             "save_recordings": bool(cfg["audio"].get("save_recordings")),
+            "mic": {"device": str(cfg["audio"].get("device") or ""), "devices": self._devices()},
             "recordings_count": len(list(RECORDINGS_DIR.glob("*.wav"))) if RECORDINGS_DIR.exists() else 0,
             "overlay": {"recording_color": cfg["overlay"]["recording_color"],
                         "scale": float(cfg["overlay"]["scale"]),
@@ -2753,6 +2874,24 @@ class SettingsApi:
             "beep_on": bool(fc["beep"]),
             "app_running": bool(user32.FindWindowW("PixelMurmurOverlay", None)),
         }
+
+    @staticmethod
+    def _devices() -> list[str]:
+        try:
+            return list_input_devices()
+        except Exception as e:
+            log.warning("列麦克风失败：%s", e)
+            return []
+
+    def mic_devices(self) -> list[str]:
+        return self._devices()
+
+    def mic_test(self, device: str) -> None:
+        self._mic.start(str(device or ""))
+
+    def mic_level(self) -> dict:
+        m = self._mic
+        return {"running": m.running, "level": m.level, "peak": m.peak, "error": m.error, "name": m.name}
 
     @staticmethod
     def _vocab_default() -> dict:
@@ -2868,6 +3007,8 @@ class SettingsApi:
             for key, val in data.get("reminders", {}).items():
                 if key in dict(Overlay.PET_OPTS):
                     write_config_value("pet", key, _toml_value(bool(val)))
+            if "mic_device" in data:
+                write_config_value("audio", "device", _toml_value(str(data["mic_device"] or "")))
             if "save_recordings" in data:
                 write_config_value("audio", "save_recordings", _toml_value(bool(data["save_recordings"])))
             vocab = data.get("vocab")

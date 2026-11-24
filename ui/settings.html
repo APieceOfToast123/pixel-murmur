@@ -53,6 +53,11 @@
   .field label { display: flex; justify-content: space-between; font-size: 13px; color: var(--soft); }
   .btn { height: 32px; padding: 0 14px; border-radius: 4px; border: 1px solid var(--line); background: var(--card2); font-size: 13px; }
   .btn:hover { border-color: #4A5568; }
+  .sel { height: 32px; min-width: 0; flex: 1; padding: 0 10px; border-radius: 4px; border: 1px solid var(--line); background: var(--card2); font-size: 13px; }
+  .sel option { background: var(--card2); }
+  .meter { position: relative; height: 10px; margin-top: 10px; border-radius: 3px; background: var(--card); border: 1px solid var(--line); overflow: hidden; }
+  .meter i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--ok); transition: width .08s linear; }
+  .meter b { position: absolute; top: 0; bottom: 0; width: 2px; left: 0; background: var(--warn); }
   .btn.pri { border: 0; background: var(--accent); color: var(--on-accent); font-weight: 600; }
   .btn.pri:disabled { opacity: .45; cursor: default; }
   .icon-btn { width: 30px; height: 30px; border: 0; border-radius: 4px; background: transparent; color: var(--sub); display: flex; align-items: center; justify-content: center; }
@@ -157,6 +162,13 @@
   <!-- ── 通用 ── -->
   <div class="page on" id="page-general">
     <div class="gen">
+      <section>
+        <h2>麦克风</h2>
+        <div class="actions" style="max-width: 620px"><select class="sel" id="mic" aria-label="用哪个麦克风"></select>
+          <button class="btn" id="micRefresh">刷新</button><button class="btn" id="micTest">试听 3 秒</button></div>
+        <div class="meter" style="max-width: 620px" aria-hidden="true"><i id="micBar"></i><b id="micPeak"></b></div>
+        <span class="hint" id="micMsg" style="display: block; margin-top: 6px">选「跟随系统默认」就用 Windows 声音设置里的默认麦克风。选了某个设备但它没插着时，会自动改用系统默认，并在桌宠旁边提示。</span>
+      </section>
       <section>
         <h2>提醒</h2>
         <div class="toggles" id="toggles"></div>
@@ -339,7 +351,7 @@ function toast(text, ok = true) {
 }
 function snapshot() {
   return JSON.stringify({ hk: D.hk, pet: Object.assign({}, D.pet, { image: D.pet.image && D.pet.image.rel, sheet: D.pet.sheet && D.pet.sheet.rel }),
-    sounds: D.sounds, v: D.voice_vol, p: D.pet_vol, rem: D.rem, ov: D.ov, rec: D.saveRec,
+    sounds: D.sounds, v: D.voice_vol, p: D.pet_vol, rem: D.rem, ov: D.ov, rec: D.saveRec, mic: D.mic,
     vocab: S ? vocabNow() : '' });
 }
 
@@ -690,6 +702,40 @@ function renderVocab() {
 $('vocabReset').onclick = () => { setVocab(S.vocab_default.terms, S.vocab_default.replacements); renderVocab(); renderFoot(); toast('已恢复成默认词表（还没保存）'); };
 $('saveRec').onchange = e => { D.saveRec = e.target.checked; renderFoot(); };
 
+/* ────────── 麦克风 ────────── */
+function renderMic(devices) {
+  const sel = $('mic'), cur = D.mic || '', low = cur.toLowerCase();
+  const opts = [['', '跟随系统默认']];
+  let found = !cur;
+  for (const n of devices) {
+    if (cur && !found && n.toLowerCase().includes(low)) { opts.push([cur, n]); found = true; }   // 配置里存的是名字片段
+    else opts.push([n, n]);
+  }
+  if (!found) opts.push([cur, `${cur}（现在没连接，会改用系统默认）`]);
+  sel.innerHTML = '';
+  for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); }
+  sel.value = cur;
+}
+$('mic').onchange = e => { D.mic = e.target.value; renderFoot(); };
+$('micRefresh').onclick = async () => { renderMic(await api().mic_devices()); toast('已刷新麦克风列表'); };
+let micTimer = null;
+$('micTest').onclick = async () => {
+  if (micTimer) return;
+  await api().mic_test(D.mic || '');
+  $('micTest').disabled = true; $('micMsg').style.color = 'var(--sub)'; $('micMsg').textContent = '正在听，对着麦克风说几句……';
+  const bar = v => Math.min(100, Math.sqrt(v / 0.25) * 100);   // 开根号让小声也看得见
+  micTimer = setInterval(async () => {
+    const m = await api().mic_level();
+    $('micBar').style.width = bar(m.level) + '%'; $('micPeak').style.left = bar(m.peak) + '%';
+    if (m.running) return;
+    clearInterval(micTimer); micTimer = null; $('micTest').disabled = false;
+    const msg = $('micMsg');
+    if (m.error) { msg.style.color = 'var(--err)'; msg.textContent = `试听失败：${m.error}`; }
+    else if (m.peak < 0.003) { msg.style.color = 'var(--warn)'; msg.textContent = `「${m.name}」打开了，但几乎没有声音：看看麦克风是不是静音、没开机，或者选错了设备`; }
+    else { msg.style.color = 'var(--ok)'; msg.textContent = `「${m.name}」能用，最大音量 ${Math.round(bar(m.peak))}%`; }
+  }, 100);
+};
+
 /* ────────── 公共 ────────── */
 function renderFoot() {
   if (toastTimer || !S) return;
@@ -712,6 +758,7 @@ function load(st) {
   D.pet = Object.assign({}, st.pet); D.voice_vol = st.voice_vol; D.pet_vol = st.pet_vol;
   D.rem = Object.assign({}, st.reminders); D.ov = Object.assign({}, st.overlay);
   D.saveRec = st.save_recordings; $('saveRec').checked = st.save_recordings;
+  D.mic = st.mic.device; renderMic(st.mic.devices);
   $('recCount').textContent = st.recordings_count ? `现在存了 ${st.recordings_count} 段` : '还没有存录音';
   setVocab(st.vocab.terms, st.vocab.replacements); vocabOrig = vocabNow(); renderVocab();
   if (!D.rem.sleep) D.pet.sleep_minutes = 0;   // 「闲置时睡觉」关着 = 滑块在 0
@@ -726,7 +773,7 @@ $('save').onclick = async () => {
   const P = D.pet;
   D.rem.sleep = P.sleep_minutes > 0;          // 滑块拉到 0 就是不睡觉
   const r = await api().save({ hotkeys: D.hk, sounds: D.sounds, voice_vol: D.voice_vol, pet_vol: D.pet_vol,
-    reminders: D.rem, overlay: D.ov, save_recordings: D.saveRec,
+    reminders: D.rem, overlay: D.ov, save_recordings: D.saveRec, mic_device: D.mic,
     vocab: vocabNow() !== vocabOrig ? { terms: parseTerms($('terms').value), replacements: parseRepl($('repl').value).pairs } : undefined,
     pet: { source: P.source, character: P.character, body_color: P.body_color, pixel_size: P.pixel_size, fps: P.fps,
       sleep_minutes: P.sleep_minutes, pixelate: P.pixelate, grid: P.grid, sheet_cell: P.sheet_cell,

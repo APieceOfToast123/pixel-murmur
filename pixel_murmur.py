@@ -965,6 +965,9 @@ if IS_WIN:
     _sig(user32.DefWindowProcW, LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
     _sig(user32.DestroyWindow, wt.BOOL, wt.HWND)
     _sig(user32.SetTimer, ctypes.c_size_t, wt.HWND, ctypes.c_size_t, wt.UINT, ctypes.c_void_p)
+    _sig(user32.SetWindowPos, wt.BOOL, wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+         ctypes.c_int, wt.UINT)
+    _sig(user32.MonitorFromWindow, wt.HANDLE, wt.HWND, wt.DWORD)
     _sig(user32.UpdateLayeredWindow, wt.BOOL, wt.HWND, wt.HDC, ctypes.POINTER(wt.POINT),
          ctypes.POINTER(wt.SIZE), wt.HDC, ctypes.POINTER(wt.POINT), wt.DWORD,
          ctypes.POINTER(BLENDFUNCTION), wt.DWORD)
@@ -1227,6 +1230,7 @@ class Overlay:
         self._pat_until = 0.0           # 被摸头（单击）动作的结束时间
         self._unread: dict[str, float] = {}  # 做完了但你还没回到 Claude 看过的会话 -> 完成时间
         self._fg_checked = 0.0          # 上次检查「Claude 在不在前台」的时间
+        self._top_checked = 0.0         # 上次重新置顶的时间
         self._bubble = None             # (文字, 截止时间, 种类)
         self._activity = now            # 最近一次有动静的时间，用来判断睡觉
         self._pet_state, self._pet_t0 = "idle", now
@@ -1367,6 +1371,36 @@ class Overlay:
         if self._bubble and self._bubble[2] == "alert":
             self._bubble = None
 
+    def _keep_on_top(self) -> None:
+        """每 2 秒重新置顶一次：任务栏、通知、别的置顶窗口会把桌宠压下去，置顶标记本身不会自己抢回来。
+        前台是全屏程序（游戏、全屏视频）时不抢，免得挡画面。"""
+        now = time.monotonic()
+        if self._moving or now - self._top_checked < 2.0:
+            return
+        self._top_checked = now
+        if self._foreground_is_fullscreen():
+            return
+        flags = 0x0001 | 0x0002 | 0x0010 | 0x0200  # NOSIZE | NOMOVE | NOACTIVATE | NOOWNERZORDER
+        user32.SetWindowPos(self.hwnd, wt.HWND(-1), 0, 0, 0, 0, flags)  # HWND_TOPMOST
+
+    def _foreground_is_fullscreen(self) -> bool:
+        fg = user32.GetForegroundWindow()
+        if not fg or fg == self.hwnd:
+            return False
+        cls = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(fg, cls, 64)
+        if cls.value in ("Progman", "WorkerW", "Shell_TrayWnd"):  # 桌面、任务栏不算
+            return False
+        rc = wt.RECT()
+        if not user32.GetWindowRect(fg, ctypes.byref(rc)):
+            return False
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(user32.MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), ctypes.byref(mi)):
+            return False
+        m = mi.rcMonitor
+        return rc.left <= m.left and rc.top <= m.top and rc.right >= m.right and rc.bottom >= m.bottom
+
     def _claude_in_front(self) -> bool:
         fc = self.cfg.get("focus", {})
         try:
@@ -1486,6 +1520,7 @@ class Overlay:
                         self.pet_event(ev)
                 return 1
             if msg == WM_TIMER:
+                self._keep_on_top()
                 self._render()
                 return 0
         except Exception:

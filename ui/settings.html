@@ -122,6 +122,13 @@
   .tog b { display: block; font-size: 14px; font-weight: 600; }
   .tog span { font-size: 12px; color: var(--sub); }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  /* 常用词 */
+  .vocab { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 14px; }
+  textarea { width: 100%; height: 250px; resize: none; padding: 10px 12px; border-radius: 6px; border: 1px solid #3B4558;
+    background: #0F131A; color: var(--text); font-family: "Cascadia Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.6; user-select: text; }
+  .tin { height: 34px; padding: 0 12px; border-radius: 6px; border: 1px solid #3B4558; background: #0F131A; color: var(--text); font: inherit; font-size: 13px; user-select: text; }
+  .tryout { margin-top: 6px; font-size: 13px; color: var(--soft); }
+  .tryout span { color: var(--accent-text); }
 
   .foot { flex: none; padding: 12px 24px; display: flex; align-items: center; gap: 10px; background: var(--footer); border-top: 1px solid var(--line); }
   .status { flex: 1; font-size: 13px; color: var(--sub); }
@@ -142,6 +149,7 @@
   <div class="tabs" role="tablist">
     <button data-tab="general" class="on">通用</button>
     <button data-tab="hotkeys">快捷键</button>
+    <button data-tab="vocab">常用词</button>
     <button data-tab="pet">桌宠</button>
     <button data-tab="sound">提示音</button>
   </div>
@@ -160,6 +168,12 @@
         <div class="field" style="margin-top: 10px"><span class="label">录音中的颜色</span><div class="swatches" id="recSwatches"></div></div>
         <div class="field" style="margin-top: 10px"><label for="pillScale"><span>胶囊大小</span><span id="pillScaleVal"></span></label><input id="pillScale" type="range" min="0.8" max="1.6" step="0.05"></div>
         <div class="field" style="margin-top: 10px"><label for="pillOpacity"><span>胶囊背景不透明度</span><span id="pillOpacityVal"></span></label><input id="pillOpacity" type="range" min="0.5" max="1" step="0.02"></div>
+      </section>
+      <section>
+        <h2>识别准确率</h2>
+        <label class="tog" style="max-width: 620px"><input type="checkbox" id="saveRec">
+          <div><b>保存最近 20 段录音</b><span>把录音和转写结果存在本机 <code>recordings\</code>（不上传），用来对比不同语音模型谁更准。不需要时关掉，旧录音可以手动删。</span></div></label>
+        <div class="actions" style="margin-top: 8px"><button class="btn" onclick="api().open_recordings()">打开录音文件夹</button><span class="hint" id="recCount" style="align-self: center"></span></div>
       </section>
       <section>
         <h2>其他</h2>
@@ -194,6 +208,27 @@
       · 按住说话的键越少越好按。用 CapsLock 说话时它不再切换大小写，打大写请按住 Shift。<br>
       · 用手柄的话，在手柄的映射软件（如 8BitDo App）里把按键映射成这里的组合键。
     </div>
+  </div>
+
+  <!-- ── 常用词 ── -->
+  <div class="page" id="page-vocab">
+    <div class="note"><b class="t">让语音识别认对你的专有名词</b><br>
+      · 本地语音模型认中文很准，但中文里夹着的英文术语（Claude、README、artifact……）容易听错。这一页用两种办法补救。<br>
+      · <b>常用词</b>：识别结果里出现这些英文词时，统一成这里的写法和大小写（unity → Unity、github → GitHub）；换成 Whisper 模型后，还会当提示词告诉模型「可能会说到这些词」。<br>
+      · <b>纠错规则</b>：把总是听错的写法直接改掉（cloud → Claude、read me → README）。英文按整个单词、不分大小写匹配，所以 promp 不会误改 prompt；中文按原样匹配。<br>
+      · 下面的「试一下」用你正在编辑的内容实时纠错，确认没有误改再保存。看日志（「通用」页 →「打开日志」）能找到哪些词常被听错。</div>
+    <div class="vocab">
+      <div class="field"><label for="terms"><span>常用词（一行一个，也可以用逗号隔开）</span><span id="termsCount"></span></label>
+        <textarea id="terms" spellcheck="false"></textarea></div>
+      <div class="field"><label for="repl"><span>纠错规则（一行一条：听错的写法 → 正确写法）</span><span id="replCount"></span></label>
+        <textarea id="repl" spellcheck="false"></textarea>
+        <span class="hint" id="replErr"></span></div>
+    </div>
+    <div class="field" style="margin-top: 12px"><label for="tryIn"><span>试一下：输入一句识别结果</span><span></span></label>
+      <input id="tryIn" class="tin" value="这是cloud的好处，帮我把截图放到readdb里，然后push到github">
+      <div class="tryout">纠错后：<span id="tryOut"></span></div></div>
+    <div class="actions" style="margin-top: 10px"><button class="btn" id="vocabReset">恢复成默认词表</button>
+      <span class="hint" style="align-self: center">恢复成随程序附带的那一份（游戏开发、AI 编程、口头禅）。</span></div>
   </div>
 
   <!-- ── 桌宠 ── -->
@@ -304,7 +339,8 @@ function toast(text, ok = true) {
 }
 function snapshot() {
   return JSON.stringify({ hk: D.hk, pet: Object.assign({}, D.pet, { image: D.pet.image && D.pet.image.rel, sheet: D.pet.sheet && D.pet.sheet.rel }),
-    sounds: D.sounds, v: D.voice_vol, p: D.pet_vol, rem: D.rem, ov: D.ov });
+    sounds: D.sounds, v: D.voice_vol, p: D.pet_vol, rem: D.rem, ov: D.ov, rec: D.saveRec,
+    vocab: S ? vocabNow() : '' });
 }
 
 /* ────────── 快捷键 ────────── */
@@ -620,6 +656,40 @@ $('resetPos').onclick = async () => {
   toast(ok ? '桌宠已回到主屏右下角' : 'Pixel Murmur 没在运行，下次启动时会在默认位置', ok);
 };
 
+/* ────────── 常用词 ────────── */
+let vocabOrig = '', tryTimer = null;
+function parseTerms(t) {
+  const seen = new Set();
+  return t.split(/[\n,，、]/).map(s => s.trim()).filter(s => s && !seen.has(s.toLowerCase()) && seen.add(s.toLowerCase()));
+}
+function parseRepl(t) {
+  const pairs = [], bad = [];
+  t.split('\n').forEach((line, i) => {
+    const s = line.trim(); if (!s || s.startsWith('#')) return;
+    const m = s.split(/\s*(?:→|->|=>|=)\s*/);
+    const k = (m[0] || '').replace(/^["']|["']$/g, '').trim(), v = (m[1] || '').replace(/^["']|["']$/g, '').trim();
+    if (m.length < 2 || !k || !v) bad.push(i + 1); else pairs.push([k, v]);
+  });
+  return { pairs, bad };
+}
+const vocabNow = () => JSON.stringify([parseTerms($('terms').value), parseRepl($('repl').value).pairs]);
+function setVocab(terms, pairs) {
+  $('terms').value = terms.join('\n');
+  $('repl').value = pairs.map(p => `${p[0]} → ${p[1]}`).join('\n');
+}
+function renderVocab() {
+  const terms = parseTerms($('terms').value), r = parseRepl($('repl').value);
+  $('termsCount').textContent = `${terms.length} 个`;
+  $('replCount').textContent = `${r.pairs.length} 条`;
+  $('replErr').style.color = 'var(--err)';
+  $('replErr').textContent = r.bad.length ? `第 ${r.bad.join('、')} 行看不懂，格式是「听错的写法 → 正确写法」，这几行不会生效` : '';
+  clearTimeout(tryTimer);
+  tryTimer = setTimeout(async () => { $('tryOut').textContent = await api().preview_fix($('tryIn').value, terms, r.pairs); }, 150);
+}
+['terms', 'repl', 'tryIn'].forEach(id => $(id).addEventListener('input', () => { renderVocab(); renderFoot(); }));
+$('vocabReset').onclick = () => { setVocab(S.vocab_default.terms, S.vocab_default.replacements); renderVocab(); renderFoot(); toast('已恢复成默认词表（还没保存）'); };
+$('saveRec').onchange = e => { D.saveRec = e.target.checked; renderFoot(); };
+
 /* ────────── 公共 ────────── */
 function renderFoot() {
   if (toastTimer || !S) return;
@@ -641,6 +711,9 @@ function load(st) {
   D.hk = Object.assign({}, st.current); D.preset = st.preset;
   D.pet = Object.assign({}, st.pet); D.voice_vol = st.voice_vol; D.pet_vol = st.pet_vol;
   D.rem = Object.assign({}, st.reminders); D.ov = Object.assign({}, st.overlay);
+  D.saveRec = st.save_recordings; $('saveRec').checked = st.save_recordings;
+  $('recCount').textContent = st.recordings_count ? `现在存了 ${st.recordings_count} 段` : '还没有存录音';
+  setVocab(st.vocab.terms, st.vocab.replacements); vocabOrig = vocabNow(); renderVocab();
   if (!D.rem.sleep) D.pet.sleep_minutes = 0;   // 「闲置时睡觉」关着 = 滑块在 0
   D.sounds = {}; D.soundInfo = {};
   for (const s of st.sounds) { D.sounds[s.id] = s.file ? s.file.rel : ''; if (s.file) D.soundInfo[s.id] = s.file; }
@@ -653,12 +726,13 @@ $('save').onclick = async () => {
   const P = D.pet;
   D.rem.sleep = P.sleep_minutes > 0;          // 滑块拉到 0 就是不睡觉
   const r = await api().save({ hotkeys: D.hk, sounds: D.sounds, voice_vol: D.voice_vol, pet_vol: D.pet_vol,
-    reminders: D.rem, overlay: D.ov,
+    reminders: D.rem, overlay: D.ov, save_recordings: D.saveRec,
+    vocab: vocabNow() !== vocabOrig ? { terms: parseTerms($('terms').value), replacements: parseRepl($('repl').value).pairs } : undefined,
     pet: { source: P.source, character: P.character, body_color: P.body_color, pixel_size: P.pixel_size, fps: P.fps,
       sleep_minutes: P.sleep_minutes, pixelate: P.pixelate, grid: P.grid, sheet_cell: P.sheet_cell,
       image: P.image ? P.image.rel : '', sheet: P.sheet ? P.sheet.rel : '' } });
   if (!r.ok) { toast(r.msg, false); return; }
-  saved = snapshot(); S.app_running = r.applied;
+  vocabOrig = vocabNow(); saved = snapshot(); S.app_running = r.applied;
   toast(r.applied ? '已保存，立即生效' : '已保存，下次启动 Pixel Murmur 时生效');
   renderAll();
 };

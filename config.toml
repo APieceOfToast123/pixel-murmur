@@ -25,6 +25,8 @@ trim_head = 0.15              # 开头裁掉的秒数（按键咔哒声、提示
 trim_tail = 0.10              # 结尾裁掉的秒数
 silence_rms = 0.002           # 低于这个音量视为静音，不转写
 retry_seconds = 5             # 启动时找不到麦克风，每隔几秒重试
+save_recordings = false       # 保存最近的录音和转写结果（存在本机 recordings/，不上传），用来对比模型
+keep_recordings = 20          # 最多保留几段
 
 [model]
 backend = "sensevoice"        # "sensevoice" 或 "whisper"
@@ -103,7 +105,43 @@ title_contains = ""
 launch = ""                   # 微信 exe 的完整路径（每台电脑不同，写在 config.local.toml）；
                               # 微信被关到托盘时，再启动一次它会把窗口调出来
 
+[vocab]
+# 常用词：你常说的专有名词、英文术语、口头禅。两个用处：
+# 1. 识别结果里出现这些英文词时，统一成这里的大小写（unity → Unity，readme → README）；
+# 2. 用 Whisper 模型时，会作为提示词告诉模型「可能会说到这些词」，认得更准。
+# 最方便在右键桌宠「设置…」→「常用词」页里改。
+terms = [
+  # AI 编程
+  "Claude", "Claude Code", "Anthropic", "Codex", "ChatGPT", "GPT", "OpenAI", "Gemini", "DeepSeek",
+  "Cursor", "Copilot", "prompt", "agent", "subagent", "MCP", "skill", "hook", "artifact", "token",
+  "context", "LLM", "RAG", "API", "SDK", "CLI", "vibe coding", "GitHub", "README", "repo", "commit",
+  "push", "pull", "merge", "branch", "PR", "issue", "bug", "debug", "refactor", "deploy", "Python",
+  "TypeScript", "JavaScript", "React", "Node.js", "npm", "pip", "JSON", "YAML", "TOML", "Markdown",
+  "PowerShell", "VS Code", "terminal", "localhost", "Docker", "diff", "CI", "MVP", "demo", "workflow",
+  # 游戏开发
+  "Unity", "Unreal", "Unreal Engine", "UE5", "Godot", "Roblox", "Roblox Studio", "Luau", "Blender",
+  "Blueprint", "Prefab", "GameObject", "MonoBehaviour", "ScriptableObject", "Shader Graph", "shader",
+  "URP", "HDRP", "Niagara", "Lumen", "Nanite", "NavMesh", "Rigidbody", "Collider", "Raycast",
+  "Animator", "Cinemachine", "Addressables", "TextMeshPro", "UI Toolkit", "Input System", "Tilemap",
+  "sprite", "mesh", "LOD", "draw call", "FPS", "C#", "C++", "HLSL", "VFX", "Steam", "itch.io", "Game Jam",
+  # 口头禅
+  "bro", "OK", "nice", "emm", "btw", "yyds", "OMG", "LOL", "LGTM", "ASAP", "vibe",
+]
+
 [replacements]
-# 识别后的固定替换，用来纠正总是认错的术语。左边是认错的写法，右边是正确写法。
-# "优尼提" = "Unity"
-# "克劳德" = "Claude"
+# 纠错规则：左边是语音识别常听错的写法，右边是正确写法。
+# 英文按「整个单词、不分大小写、中间空格可有可无」匹配（所以 promp 不会误改 prompt）；中文按原样匹配。
+# 下面这些来自实际听错的记录。注意："cloud" 一律改成 Claude，如果你常说英文的 cloud（云），把这条删掉。
+"cloud code" = "Claude Code"
+"cloud" = "Claude"
+"克劳德" = "Claude"
+"code X" = "Codex"
+"promp" = "prompt"
+"artact" = "artifact"
+"art fact" = "artifact"
+"read me" = "README"
+"readdb" = "README"
+"get hub" = "GitHub"
+"git hub" = "GitHub"
+"c sharp" = "C#"
+"优尼提" = "Unity"

@@ -90,6 +90,8 @@ DEFAULTS: dict = {
         "trim_tail": 0.10,
         "silence_rms": 0.002,
         "retry_seconds": 5,
+        "save_recordings": False,   # 保存最近的录音（用来对比不同模型的准确率），只存在本机 recordings/
+        "keep_recordings": 20,
     },
     "model": {
         "backend": "sensevoice",
@@ -145,8 +147,11 @@ DEFAULTS: dict = {
     "focus": {"process_names": ["claude.exe"], "title_contains": "", "launch": ""},
     "focus_wechat": {"process_names": ["weixin.exe", "wechat.exe"], "title_contains": "",
                      "launch": ""},
+    "vocab": {"terms": []},
     "replacements": {},
 }
+# 这些段在本机配置里出现时整段替换共用配置（而不是逐项合并），这样在设置窗口里删掉的规则才真的删掉
+_REPLACE_WHOLE = {"replacements"}
 
 
 def load_config() -> dict:
@@ -157,11 +162,35 @@ def load_config() -> dict:
         with open(path, "rb") as f:
             user = tomllib.load(f)
         for section, value in user.items():
-            if isinstance(value, dict) and isinstance(cfg.get(section), dict):
+            if isinstance(value, dict) and isinstance(cfg.get(section), dict) \
+                    and not (path == LOCAL_CONFIG_PATH and section in _REPLACE_WHOLE):
                 cfg[section].update(value)
             else:
-                cfg[section] = value
+                cfg[section] = dict(value) if isinstance(value, dict) else value
     return cfg
+
+
+def replace_config_section(section: str, body: list[str]) -> None:
+    """把 config.local.toml 里整段 [section] 换成 body（每项一行 TOML），没有就加在末尾。"""
+    path = LOCAL_CONFIG_PATH
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else [_LOCAL_HEADER]
+    out, skipping = [], False
+    for line in lines:
+        s = line.strip()
+        if s.startswith("[") and not s.startswith("[["):
+            skipping = s.split("#")[0].strip() == f"[{section}]"
+            if skipping:
+                continue
+        if not skipping:
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    if out and not out[-1].endswith("\n"):
+        out[-1] += "\n"
+    out += ["\n", f"[{section}]\n"] + [b + "\n" for b in body]
+    tmp = path.with_suffix(".toml.tmp")
+    tmp.write_text("".join(out), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 _LOCAL_HEADER = ("# 本机设置：只跟这台电脑有关，会覆盖 config.toml 里的同名项。这个文件不上传 GitHub。\n"
@@ -251,6 +280,7 @@ class Transcriber:
 
     def __init__(self, cfg: dict):
         self.cfg = cfg["model"]
+        self.prompt = whisper_prompt(cfg)
         self._lock = threading.Lock()
         self._model = None
         self.last_used = time.monotonic()
@@ -347,7 +377,7 @@ class Transcriber:
                 segments, _ = self._model.transcribe(
                     audio,
                     language=None if lang == "auto" else lang,
-                    initial_prompt=self.cfg.get("whisper_prompt") or None,
+                    initial_prompt=self.prompt,
                     beam_size=5,
                     condition_on_previous_text=False,
                 )
@@ -356,10 +386,62 @@ class Transcriber:
         return text.strip()
 
 
-def apply_replacements(text: str, table: dict) -> str:
-    for src, dst in table.items():
-        text = text.replace(src, dst)
-    return text
+def _ascii_word_pattern(word: str) -> re.Pattern:
+    """英文词按「整个单词、不分大小写、中间空格可多可少」匹配；不会误伤 prompt 里的 promp。"""
+    parts = [re.escape(p) for p in word.split()]
+    return re.compile(r"(?<![A-Za-z0-9])" + r"\s*".join(parts) + r"(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def fix_text(text: str, cfg: dict) -> str:
+    """转写后的纠错：先按 [replacements] 把常听错的写法改掉，再把 [vocab] terms 里的词统一成正确大小写。"""
+    table = cfg.get("replacements") or {}
+    for src in sorted(table, key=len, reverse=True):          # 长的先换，"cloud code" 先于 "cloud"
+        dst = str(table[src])
+        if not src:
+            continue
+        if src.isascii():
+            text = _ascii_word_pattern(src).sub(lambda m: dst, text)
+        else:
+            text = text.replace(src, dst)
+    for term in (cfg.get("vocab") or {}).get("terms") or []:
+        term = str(term).strip()
+        if term and term.isascii() and any(c.isalpha() for c in term):
+            text = _ascii_word_pattern(term).sub(lambda m: term, text)
+    return text.strip()
+
+
+RECORDINGS_DIR = BASE / "recordings"   # 打开「保存最近录音」后存在这里（不上传）
+
+
+def save_recording(audio16: np.ndarray, raw: str, text: str, backend: str, cost: float,
+                   keep: int) -> None:
+    """存一段录音（16 kHz 单声道 WAV）和它的转写结果，只保留最近 keep 段，用来对比模型。"""
+    import wave
+    RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    name = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}.wav"
+    pcm = (np.clip(audio16, -1, 1) * 32767).astype("<i2").tobytes()
+    with wave.open(str(RECORDINGS_DIR / name), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(TARGET_SR)
+        w.writeframes(pcm)
+    index = RECORDINGS_DIR / "index.jsonl"
+    rows = [json.loads(l) for l in index.read_text(encoding="utf-8").splitlines() if l.strip()] \
+        if index.exists() else []
+    rows.append({"file": name, "seconds": round(len(audio16) / TARGET_SR, 2), "backend": backend,
+                 "cost": round(cost, 3), "raw": raw, "text": text})
+    for old in rows[:-keep] if keep > 0 else []:
+        (RECORDINGS_DIR / old["file"]).unlink(missing_ok=True)
+    rows = rows[-keep:] if keep > 0 else rows
+    index.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+
+
+def whisper_prompt(cfg: dict) -> str | None:
+    """Whisper 的提示词：基础说明 + 常用词（太长会被截掉，只取前面一部分）。"""
+    base = (cfg["model"].get("whisper_prompt") or "").strip()
+    terms = [str(t) for t in (cfg.get("vocab") or {}).get("terms") or [] if str(t).strip()]
+    prompt = base + ("常用词：" + "、".join(terms) + "。" if terms else "")
+    return prompt[:600] or None
 
 
 # ───────────────────────────── Win32 ─────────────────────────────
@@ -2239,11 +2321,18 @@ class App:
         if not self.transcriber.loaded:
             self.overlay.set("loading")
         t0 = time.monotonic()
-        text = self.transcriber.transcribe(resample(mono, sr))
+        audio16 = resample(mono, sr)
+        raw = self.transcriber.transcribe(audio16)
         cost = time.monotonic() - t0
-        text = apply_replacements(text, self.cfg["replacements"]).strip()
+        text = fix_text(raw, self.cfg)
         shown = text if self.cfg["feedback"]["log_text"] else f"<{len(text)} 字>"
         log.info("录音 %.1f 秒，转写 %.2f 秒：%s", duration, cost, shown)
+        if ac.get("save_recordings"):
+            try:
+                save_recording(audio16, raw, text, self.cfg["model"]["backend"], cost,
+                               int(ac.get("keep_recordings", 20)))
+            except Exception:
+                log.warning("保存录音失败", exc_info=True)
         if generation != self._generation:
             log.info("已被取消，丢弃结果")
             return
@@ -2323,7 +2412,7 @@ def cmd_transcribe(path: str, cfg: dict) -> None:
     dur = len(audio) / sr
     print(f"加载模型 {t1 - t0:.2f} 秒；音频 {dur:.1f} 秒，转写 {t2 - t1:.2f} 秒"
           f"（实时率 {(t2 - t1) / dur:.3f}）")
-    print(apply_replacements(text, cfg["replacements"]))
+    print(fix_text(text, cfg))
 
 
 def cmd_autostart(install: bool) -> None:
@@ -2547,6 +2636,11 @@ class SettingsApi:
                     "sheet_cell": int(pc.get("sheet_cell", 32)), "image": image, "sheet": sheet},
             "sounds": sounds,
             "reminders": {k: bool(pc.get(k, True)) for k, _ in Overlay.PET_OPTS},
+            "vocab": {"terms": [str(t) for t in cfg["vocab"].get("terms", [])],
+                      "replacements": [[str(k), str(v)] for k, v in cfg["replacements"].items()]},
+            "vocab_default": self._vocab_default(),
+            "save_recordings": bool(cfg["audio"].get("save_recordings")),
+            "recordings_count": len(list(RECORDINGS_DIR.glob("*.wav"))) if RECORDINGS_DIR.exists() else 0,
             "overlay": {"recording_color": cfg["overlay"]["recording_color"],
                         "scale": float(cfg["overlay"]["scale"]),
                         "opacity": float(cfg["overlay"]["opacity"])},
@@ -2554,6 +2648,16 @@ class SettingsApi:
             "beep_on": bool(fc["beep"]),
             "app_running": bool(user32.FindWindowW("PixelMurmurOverlay", None)),
         }
+
+    @staticmethod
+    def _vocab_default() -> dict:
+        """随程序附带的默认词表（只看共用配置 config.toml，不含本机改动）。"""
+        try:
+            shared = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            shared = {}
+        return {"terms": [str(t) for t in shared.get("vocab", {}).get("terms", [])],
+                "replacements": [[str(k), str(v)] for k, v in shared.get("replacements", {}).items()]}
 
     def _sheet_info(self, path: Path, rel: str, cell: int) -> dict:
         from PIL import Image
@@ -2659,6 +2763,15 @@ class SettingsApi:
             for key, val in data.get("reminders", {}).items():
                 if key in dict(Overlay.PET_OPTS):
                     write_config_value("pet", key, _toml_value(bool(val)))
+            if "save_recordings" in data:
+                write_config_value("audio", "save_recordings", _toml_value(bool(data["save_recordings"])))
+            vocab = data.get("vocab")
+            if vocab is not None:   # 只在常用词页改过时才写，没改就继续跟着共用配置走
+                terms = [str(t).strip() for t in vocab.get("terms", []) if str(t).strip()]
+                write_config_value("vocab", "terms", json.dumps(terms, ensure_ascii=False))
+                replace_config_section("replacements", [
+                    f"{json.dumps(str(k), ensure_ascii=False)} = {json.dumps(str(v), ensure_ascii=False)}"
+                    for k, v in vocab.get("replacements", []) if str(k).strip()])
             ov = data.get("overlay", {})
             if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(ov.get("recording_color", ""))):
                 write_config_value("overlay", "recording_color", _toml_value(ov["recording_color"].upper()))
@@ -2691,6 +2804,14 @@ class SettingsApi:
         if not LOCAL_CONFIG_PATH.exists():
             LOCAL_CONFIG_PATH.write_text(_LOCAL_HEADER, encoding="utf-8")
         os.startfile(LOCAL_CONFIG_PATH)
+
+    def open_recordings(self) -> None:
+        RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+        os.startfile(RECORDINGS_DIR)
+
+    def preview_fix(self, text: str, terms: list, pairs: list) -> str:
+        """常用词页的「试一下」：用你正在编辑（还没保存）的词表和规则纠一句话。"""
+        return fix_text(text, {"vocab": {"terms": terms}, "replacements": {k: v for k, v in pairs if k}})
 
     def open_log(self) -> None:
         if LOG_PATH.exists():

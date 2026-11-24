@@ -1,0 +1,6 @@
+﻿numpy
+sounddevice
+sherpa-onnx
+Pillow
+# 备选模型，只在 config.toml 里 backend = "whisper" 时需要：
+# faster-whisper

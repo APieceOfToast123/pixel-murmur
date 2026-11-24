@@ -1,0 +1,91 @@
+# 语音输入配置（所有电脑共用的默认值，随仓库同步）。
+# 只跟这台电脑有关的设置（麦克风名字、微信路径等）写进同目录的 config.local.toml，
+# 它会覆盖这里的同名项，且不会上传。右键菜单里改的颜色和开关也写进 config.local.toml。
+# 改完后右键桌宠选「退出」，再重新启动才生效。
+
+[hotkeys]
+# 手柄上的键在 8BitDo App 里映射成这些组合键。留空字符串 "" 表示不启用该键。
+talk         = "ctrl+alt+shift+f9"    # B：按住说话，松开后粘贴
+talk_send    = "ctrl+alt+shift+f10"   # A：按住说话，松开后粘贴并回车
+cancel       = "ctrl+alt+shift+f12"   # R1：取消本次录音（也会作废正在转写的那一句）
+focus        = "ctrl+alt+shift+f8"    # +：唤起 Claude；已在前台时再按 = 最小化
+focus_wechat = "ctrl+alt+shift+f11"   # −：唤起微信；已在前台时再按 = 最小化
+# 以下由手柄（8BitDo Micro）直接发普通按键，不经过本程序：
+# X = Tab，Y / → = Enter，R2 = Ctrl+Enter，↑↓ = 方向键；←、L1、L2 未定义。
+
+[audio]
+# 麦克风名字里的一段，不分大小写。留空 = 系统默认输入设备。
+# 每台电脑不同，写在 config.local.toml 里（--setup 会让你选）；
+# 也可以运行 python voice_input.py --list-devices 查看名字。
+device = ""
+fallback_to_default = false   # 找不到上面的设备时，是否退回系统默认麦克风
+max_seconds = 120             # 最长录音时间，防止松开信号丢失
+min_seconds = 0.3             # 短于这个时长视为误触
+trim_head = 0.15              # 开头裁掉的秒数（按键咔哒声、提示音）
+trim_tail = 0.10              # 结尾裁掉的秒数
+silence_rms = 0.002           # 低于这个音量视为静音，不转写
+retry_seconds = 5             # 启动时找不到麦克风，每隔几秒重试
+
+[model]
+backend = "sensevoice"        # "sensevoice" 或 "whisper"
+threads = 4                   # CPU 线程数
+language = "zh"               # sensevoice: zh / en / auto；whisper: zh / en / auto
+                              # 中文夹英文术语用 "zh" 即可；"auto" 偶尔会把短句误判成粤语或日语
+idle_unload_minutes = 0       # 闲置多少分钟后卸载模型，0 = 常驻内存
+sensevoice_dir = ""           # 留空则自动下载到 models 目录
+# 以下只在 backend = "whisper" 时使用（需要 pip install faster-whisper）
+whisper_model = "small"       # 或 "turbo"
+whisper_compute_type = "int8"
+whisper_prompt = "以下是普通话的句子，夹杂 Unity、Unreal Engine、Claude Code 等英文术语。"
+
+[paste]
+restore_clipboard = true      # 粘贴后恢复原来的剪贴板内容
+restore_delay = 0.4           # 按下 Ctrl+V 后等多久再恢复（目标程序反应慢就调大）
+enter_delay = 0.15            # 粘贴后等多久再按回车
+send_on_timeout = false       # 录音因超时而收尾时，键 2 是否仍然自动回车
+
+[feedback]
+beep = true                   # 提示音总开关
+beep_start_hz = 880           # 开始录音的音高（Hz）
+beep_stop_hz = 660            # 结束录音的音高（Hz）
+beep_ms = 120                 # 每声时长（毫秒），建议 60–250
+beep_volume = 0.08            # 音量 0–1（相对值，实际响度还取决于系统音量）
+beep_two_tone = true          # 双音：开始时上扬、结束时下降
+log_text = true               # 日志里是否记录识别出的文字
+
+[overlay]
+# 录音胶囊（桌宠旁边弹出的那个）。拖动桌宠换位置（位置存在 ui_state.json），右键打开菜单。
+scale = 1.0                   # 胶囊大小，建议 0.8–1.5
+opacity = 0.92                # 胶囊背景不透明度 0–1
+recording_color = "#E5484D"   # 录音中的颜色；右键菜单「录音颜色」改的是 config.local.toml
+
+[pet]
+# 像素桌宠。事件来自 Claude Code 钩子（~/.claude/settings.json 里调用 pet_hook.py）。
+character = "blob"            # blob 团子 / cat 小猫 / bot 小机器人
+body_color = "#E08A5C"        # 身体颜色
+pixel_size = 4                # 一个像素块的大小（逻辑像素），建议 2–6；角色本身 16×16
+fps = 8                       # 动画速度（帧/秒），建议 4–12
+sound_volume = 0.3            # 桌宠提示音音量 0–1
+sleep_minutes = 5             # 多少分钟没动静就睡觉
+# 以下 5 项可以在右键菜单里直接开关，开关结果写进 config.local.toml
+done_sound = true             # 做完时叫一声
+done_bubble = true            # 做完时气泡显示回复开头
+alert = true                  # 需要确认时提醒（头顶冒「!」，点一下桌宠消失）
+typing = true                 # 干活时敲键盘
+sleep = true                  # 闲置时睡觉
+
+[focus]
+process_names = ["claude.exe"]
+title_contains = ""           # 可选：窗口标题必须包含这段文字
+launch = ""                   # 可选：找不到可见窗口时启动这个程序
+
+[focus_wechat]
+process_names = ["weixin.exe", "wechat.exe"]
+title_contains = ""
+launch = ""                   # 微信 exe 的完整路径（每台电脑不同，写在 config.local.toml）；
+                              # 微信被关到托盘时，再启动一次它会把窗口调出来
+
+[replacements]
+# 识别后的固定替换，用来纠正总是认错的术语。左边是认错的写法，右边是正确写法。
+# "优尼提" = "Unity"
+# "克劳德" = "Claude"

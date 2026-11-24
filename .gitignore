@@ -1,0 +1,11 @@
+# 每台电脑自己装、自己下载、自己生成的东西
+.venv/
+models/
+logs/
+backup/
+__pycache__/
+*.tmp
+
+# 本机设置和状态
+config.local.toml
+ui_state.json

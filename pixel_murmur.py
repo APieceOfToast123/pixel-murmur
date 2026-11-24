@@ -1,16 +1,17 @@
-"""按住说话语音输入（Windows，纯 CPU，本地模型）。
+"""Pixel Murmur：为 vibe coding 而生的语音输入 + 像素桌宠（Windows，纯 CPU，本地模型）。
 
 按住全局快捷键 -> 录音；松开 -> 本地转写 -> 剪贴板 + Ctrl+V 粘贴 ->（可选）回车。
-屏幕上有一个可拖动的小悬浮窗显示状态，右键它打开菜单（颜色、复位位置、配置、日志、退出）。
+屏幕上的像素桌宠显示录音状态，并通过 Claude Code 钩子（pet_hook.py）对开工、完成、
+需要确认做出反应。拖动换位置，单击摸头并唤起 Claude，右键打开菜单。
 
 用法：
-    python voice_input.py                     前台运行（看得到日志）
-    pythonw voice_input.py                    后台运行（无窗口）
-    python voice_input.py --list-devices      列出输入设备
-    python voice_input.py --transcribe a.wav  用当前模型转写一个 wav，并报告耗时
-    python voice_input.py --install-autostart 开机自启（写入当前用户的注册表 Run 项）
-    python voice_input.py --remove-autostart
-    python voice_input.py --setup             新电脑一键设置：选麦克风、找微信、挂 Claude 钩子、开机自启
+    python pixel_murmur.py                     前台运行（看得到日志）
+    pythonw pixel_murmur.py                    后台运行（无窗口）
+    python pixel_murmur.py --list-devices      列出输入设备
+    python pixel_murmur.py --transcribe a.wav  用当前模型转写一个 wav，并报告耗时
+    python pixel_murmur.py --install-autostart 开机自启（写入当前用户的注册表 Run 项）
+    python pixel_murmur.py --remove-autostart
+    python pixel_murmur.py --setup             新电脑一键设置：选麦克风、找微信、挂 Claude 钩子、开机自启
 
 实现上的几个取舍（都是为了稳定）：
 - 快捷键用 RegisterHotKey，不装全局键盘钩子。钩子在 Python 进程忙时会拖慢整机键盘，
@@ -45,10 +46,11 @@ IS_WIN = sys.platform == "win32"
 BASE = Path(__file__).resolve().parent
 CONFIG_PATH = BASE / "config.toml"              # 共用默认值，随仓库同步
 LOCAL_CONFIG_PATH = BASE / "config.local.toml"  # 本机设置，覆盖上面的同名项，不上传
-LOG_PATH = BASE / "logs" / "voice_input.log"
+LOG_PATH = BASE / "logs" / "pixel_murmur.log"
 UI_STATE_PATH = BASE / "ui_state.json"  # 程序自己维护：悬浮窗位置
 MODELS_DIR = BASE / "models"
-APP_NAME = "VoiceInput"
+APP_NAME = "PixelMurmur"
+LEGACY_APP_NAMES = ("VoiceInput",)  # 改名前的开机自启项，--setup 时顺手删掉
 TARGET_SR = 16000
 
 SENSEVOICE_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
@@ -1071,11 +1073,11 @@ class Overlay:
         wc.lpfnWndProc = self._proc
         wc.hInstance = hinst
         wc.hCursor = user32.LoadCursorW(None, ctypes.c_void_p(32512))  # IDC_ARROW
-        wc.lpszClassName = "VoiceInputOverlay"
+        wc.lpszClassName = "PixelMurmurOverlay"
         user32.RegisterClassExW(ctypes.byref(wc))
         self.hwnd = user32.CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-            "VoiceInputOverlay", "语音输入", WS_POPUP, 0, 0, 1, 1, None, None, hinst, None)
+            "PixelMurmurOverlay", "语音输入", WS_POPUP, 0, 0, 1, 1, None, None, hinst, None)
         if not self.hwnd:
             log.error("创建悬浮窗失败（错误码 %d）", ctypes.get_last_error())
             self.enabled = False
@@ -1972,16 +1974,17 @@ def cmd_autostart(install: bool) -> None:
                          r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
                          winreg.KEY_SET_VALUE)
     with key:
+        for name in LEGACY_APP_NAMES + (() if install else (APP_NAME,)):
+            try:
+                winreg.DeleteValue(key, name)  # 改名前留下的旧自启项指向已不存在的路径
+            except FileNotFoundError:
+                pass
         if install:
             pythonw = Path(sys.executable).with_name("pythonw.exe")
             value = f'"{pythonw}" "{Path(__file__).resolve()}"'
             winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, value)
             print("已设置开机自启：", value)
         else:
-            try:
-                winreg.DeleteValue(key, APP_NAME)
-            except FileNotFoundError:
-                pass
             print("已取消开机自启")
 
 
@@ -2040,7 +2043,11 @@ def _choose_microphone(cfg: dict) -> None:
     print(f"  当前：{current}")
     for i, n in enumerate(names, 1):
         print(f"  [{i}] {n}")
-    choice = input("  输入编号选麦克风（直接回车 = 不改）：").strip()
+    try:
+        choice = input("  输入编号选麦克风（直接回车 = 不改）：").strip()
+    except EOFError:  # 没有可输入的终端（比如被其他程序调用），保持不变
+        print()
+        choice = ""
     if choice.isdigit() and 1 <= int(choice) <= len(names):
         name = names[int(choice) - 1]
         write_config_value("audio", "device", json.dumps(name, ensure_ascii=False))
@@ -2060,7 +2067,7 @@ def _find_wechat() -> str:
 
 def cmd_setup(cfg: dict) -> None:
     """新电脑一键设置：选麦克风、找微信、挂 Claude 钩子、开机自启、启动。"""
-    print("== 语音输入 / 桌宠：本机设置 ==")
+    print("== Pixel Murmur：本机设置 ==")
     if not LOCAL_CONFIG_PATH.exists():
         LOCAL_CONFIG_PATH.write_text(_LOCAL_HEADER, encoding="utf-8")
     print("\n1. 麦克风")
@@ -2092,7 +2099,7 @@ def cmd_setup(cfg: dict) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="按住说话语音输入")
+    ap = argparse.ArgumentParser(description="Pixel Murmur：为 vibe coding 而生的语音输入 + 像素桌宠")
     ap.add_argument("--list-devices", action="store_true")
     ap.add_argument("--transcribe", metavar="WAV")
     ap.add_argument("--install-autostart", action="store_true")
@@ -2115,7 +2122,7 @@ def main() -> None:
         return cmd_setup(cfg)
 
     # 单实例
-    mutex = kernel32.CreateMutexW(None, False, "Local\\VoiceInputPushToTalk")
+    mutex = kernel32.CreateMutexW(None, False, "Local\\PixelMurmur")
     if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
         log.warning("已有一个实例在运行，本次启动退出")
         return

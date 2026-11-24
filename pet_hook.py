@@ -10,7 +10,7 @@ import re
 import sys
 from ctypes import wintypes as wt
 
-PET_MSG_MAGIC = 0x50455431  # 和 voice_input.py 里的一致
+PET_MSG_MAGIC = 0x50455431  # 和 pixel_murmur.py 里的一致
 WM_COPYDATA = 0x004A
 SMTO_ABORTIFHUNG = 0x0002
 
@@ -46,7 +46,7 @@ def main() -> None:
     user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
     user32.SendMessageTimeoutW.argtypes = (wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM, wt.UINT,
                                            wt.UINT, ctypes.POINTER(ctypes.c_size_t))
-    hwnd = user32.FindWindowW("VoiceInputOverlay", None)
+    hwnd = user32.FindWindowW("PixelMurmurOverlay", None)
     if not hwnd:
         return
     payload = json.dumps(msg, ensure_ascii=False).encode("utf-8")

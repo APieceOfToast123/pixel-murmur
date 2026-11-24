@@ -6,5 +6,5 @@ py -3 -m venv .venv || (echo 没找到 Python 3.12 或 3.13，请先从 python.o
 .venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r requirements.txt || (pause & exit /b 1)
 echo.
-.venv\Scripts\python voice_input.py --setup
+.venv\Scripts\python pixel_murmur.py --setup
 pause

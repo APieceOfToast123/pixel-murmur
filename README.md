@@ -1,80 +1,163 @@
-# 按住说话语音输入
+<p align="center">
+  <img src="docs/banner.png" alt="Pixel Murmur：为 vibe coding 而生的语音输入 + 像素桌宠" width="100%">
+</p>
 
-按住快捷键说话，松开后文字粘贴到当前输入框。模型在本地 CPU 上运行，不占显存，不联网（首次下载模型除外）。
+<p align="center">
+  <img alt="Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.12%20%7C%203.13-3776AB">
+  <img alt="Offline" src="https://img.shields.io/badge/speech-100%25%20local-2EA043">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey">
+</p>
 
-## 在一台新电脑上安装
+# Pixel Murmur
 
-1. 安装 Python 3.12 或 3.13（python.org，勾选 “Add to PATH”）和 Git。
-2. 下载代码（仓库是私有的，需要先在这台电脑上登录 GitHub，比如 `gh auth login`）：
-   `git clone https://github.com/APieceOfToast123/voice-input C:\voice-input`
-3. 双击 `C:\voice-input\install.bat`。它会：
-   - 建 `.venv` 并安装依赖；
-   - 让你选麦克风（输入编号）；
-   - 自动找微信的安装位置；
-   - 把桌宠的钩子合并进这台电脑的 `~/.claude/settings.json`（原文件先备份到 `backup`）；
-   - 设好开机自启，并在后台启动。第一次启动会下载 SenseVoice 模型（约 160 MB）。
-4. 把手柄连到这台电脑，在 8BitDo App 里确认按键映射（见下方按键表）。
-5. 打开记事本，按住 B 说一句话，松开，看能不能出字。
+**为 vibe coding 而生的语音输入 + 像素桌宠。**
 
-以后想重新选麦克风或重挂钩子，再运行一次 `.venv\Scripts\python voice_input.py --setup` 即可。
+和 AI 一起写代码时，大部分时间你都在「描述需求」和「等它干完」。Pixel Murmur 把这两件事都变轻松：
 
-**同步更新**：在 `C:\voice-input` 里运行 `git pull`，然后右键桌宠「退出」再重新启动（或重启电脑）。
+- **按住说话，松手就发。** 握着手柄按住一个键说话，松开后文字直接贴进 Claude 的输入框，愿意的话还能顺手回车发送。语音在本机 CPU 上转写，一句话大约 0.05 秒出字，**不联网、不上传**。
+- **不用盯着屏幕等。** 屏幕角落住着一只像素小家伙：Claude 开工时它敲键盘，干完活它跳起来叫你，需要你确认时它头顶冒出「!」。
+- **靠在椅子上就能工作。** 说话、发送、Tab、回车、切到 Claude / 微信，全在一个手柄上。
 
-## 配置文件
-
-- `config.toml`：所有电脑共用的默认值，随仓库同步。
-- `config.local.toml`：只跟这台电脑有关的设置（麦克风名字、微信路径、右键菜单里改的颜色和开关），覆盖 `config.toml` 的同名项，**不上传**。
-- `ui_state.json`：桌宠的位置，程序自己维护，不上传。
+<p align="center">
+  <img src="docs/demo.gif" alt="演示：按住说话 → 转写 → Claude 干活 → 做完庆祝 → 摸摸头" width="560">
+</p>
 
 ## 桌宠
 
-屏幕右下角有一只像素桌宠（团子 / 小猫 / 小机器人，在 `config.toml` 的 `[pet]` 里选）。
+三个原创像素角色可选：**团子**、**小猫**、**小机器人**。颜色、大小、动画速度都能调。
 
-| 什么时候 | 桌宠做什么 |
+<p align="center">
+  <img src="docs/actions.png" alt="三个角色的七种动作" width="100%">
+</p>
+
+| 什么时候 | 桌宠会 |
 |---|---|
-| 平时 | 呼吸起伏、偶尔眨眼；`sleep_minutes` 分钟没动静就睡觉冒 z |
-| 按住说话 | 两侧冒声波，旁边弹出录音胶囊（计时 + 音量格）；松开后胶囊显示「转写中…」→「已粘贴」 |
+| 平时 | 呼吸起伏、偶尔眨眼；几分钟没动静就睡觉冒 z |
+| 你按住说话 | 两侧冒出声波，旁边弹出录音胶囊（计时 + 音量格），松开后显示「转写中…」→「已粘贴」 |
 | 你给 Claude 发了消息 | 抱着小键盘敲字，直到 Claude 做完 |
-| Claude 做完 | 跳起来冒星星，叮一声（上行三连音），气泡显示回复开头 |
-| Claude 需要你确认 | 头顶冒「!」左右晃，叮咚一声；单击桌宠或你回复后消失 |
+| Claude 做完 | 跳起来冒星星，「叮」一声，气泡里显示回复的第一句 |
+| Claude 需要你确认 | 头顶冒「!」左右晃，「叮咚」一声；单击它或你回复后消失 |
+| 你单击它 | 被摸摸头（小手拍拍、眯眼、冒一颗心），同时把 Claude 切到前台 |
 
-- **拖动**换位置，位置记在 `ui_state.json`。在屏幕右半边时胶囊和气泡放左边，左半边时放右边。
-- **单击**：摸摸头（小手拍拍、眯眼、冒一颗心），同时把 Claude 切到前台（已经在前台就不动）、关掉「需要你」的提醒、叫醒它。鼠标移到桌宠上会变成小手。
-- **右键**菜单：五项提醒开关（会写进 `config.local.toml`）、查看用量（打开 Claude 的用量页面）、录音颜色、复位到右下角、打开配置文件、打开日志、退出。
-- 拖动、单击、右键都不会抢走你正在打字的窗口的焦点。
-- Claude 的事件来自 Claude Code 的钩子：`~/.claude/settings.json` 里的 `UserPromptSubmit` / `Stop` / `StopFailure` / `Notification` 都调用 `pet_hook.py`，它把事件发给桌宠。桌宠没开时钩子什么也不做。
-- 剩余额度：桌面版 Claude 没有官方的读取方式，所以桌宠不显示数字，右键「查看用量」直接打开官方页面。
+- **拖动**换位置，重启后还在原处；在屏幕哪一侧，胶囊和气泡就往另一侧展开。
+- **右键**打开菜单：每种提醒单独开关、查看用量、录音颜色、复位到右下角、打开配置 / 日志、退出。
+- 拖动、单击、右键都**不会抢走**你正在打字的窗口的焦点。
 
-## 按键
+## 推荐硬件
 
-| 手柄 | 快捷键 | 行为 |
+| | 我在用的 | 替代 |
 |---|---|---|
-| B（按住） | Ctrl+Alt+Shift+F9 | 说话，松开后粘贴 |
-| A（按住） | Ctrl+Alt+Shift+F10 | 说话，松开后粘贴并回车 |
-| R1 | Ctrl+Alt+Shift+F12 | 取消（作废这一句，不粘贴） |
-| + | Ctrl+Alt+Shift+F8 | 唤起 Claude；已在前台时再按一下 = 最小化 |
-| − | Ctrl+Alt+Shift+F11 | 唤起微信（关到托盘时会重新调出）；已在前台时再按一下 = 最小化 |
-| X | Tab | 手柄直接发，不经过本程序 |
-| Y、→ | Enter | 手柄直接发，不经过本程序 |
-| R2 | Ctrl+Enter | 手柄直接发，不经过本程序 |
-| ↑ / ↓ | 方向键 | 手柄直接发，不经过本程序 |
-| ←、L1、L2 | — | 暂未定义 |
+| 手柄 | 8BitDo Micro（键盘模式） | 任何能把按键映射成键盘组合键的手柄或宏键盘 |
+| 麦克风 | 大疆无线麦克风 | 任何麦克风；电脑自带的也能用 |
 
-手柄型号：8BitDo Micro。
+没有手柄也行：所有功能都是普通的全局快捷键，直接在键盘上按也一样。
 
-快捷键全部在 `config.toml` 里改；手柄映射在 8BitDo 的 App 里改。
+### 手柄按键（8BitDo Micro）
+
+| 手柄 | 发出的按键 | 作用 |
+|---|---|---|
+| **B**（按住） | Ctrl+Alt+Shift+F9 | 说话，松开后粘贴 |
+| **A**（按住） | Ctrl+Alt+Shift+F10 | 说话，松开后粘贴并回车（直接发送） |
+| **R1** | Ctrl+Alt+Shift+F12 | 取消这一句 |
+| **+** | Ctrl+Alt+Shift+F8 | 唤起 Claude；已在前台时再按 = 最小化 |
+| **−** | Ctrl+Alt+Shift+F11 | 唤起微信；已在前台时再按 = 最小化 |
+| **X** | Tab | 接受补全 / 建议 |
+| **Y**、**→** | Enter | 回车 |
+| **R2** | Ctrl+Enter | 发送 |
+| **↑ / ↓** | 方向键 | 上下选择 |
+
+组合键在 `config.toml` 的 `[hotkeys]` 里改；手柄那头在 8BitDo 的 App 里映射。
+
+## 安装
+
+需要 Windows 10/11、[Python 3.12 或 3.13](https://www.python.org/downloads/)（安装时勾选 “Add to PATH”）和 Git。
+
+```powershell
+git clone https://github.com/APieceOfToast123/pixel-murmur C:\pixel-murmur
+```
+
+然后双击 `C:\pixel-murmur\install.bat`，它会依次：
+
+1. 建虚拟环境并安装依赖；
+2. 列出麦克风，让你输入编号选一个；
+3. 自动找到微信的安装位置；
+4. 把桌宠的钩子合并进 `~/.claude/settings.json`（原文件先备份到 `backup\`，你已有的设置和钩子都保留）；
+5. 设好开机自启，并在后台启动。第一次启动会下载 SenseVoice 语音模型（约 160 MB）。
+
+装好后打开记事本，按住 B（或 Ctrl+Alt+Shift+F9）说一句话，松开，就会出字。
+
+想重新选麦克风或重新挂钩子，随时再运行：
+
+```powershell
+C:\pixel-murmur\.venv\Scripts\python C:\pixel-murmur\pixel_murmur.py --setup
+```
+
+更新到最新版：在 `C:\pixel-murmur` 里运行 `git pull`，然后右键桌宠选「退出」再重新启动（或者重启电脑）。
+
+## 它是怎么工作的
+
+```mermaid
+flowchart LR
+    pad["手柄按键"] --> hk["全局快捷键"]
+    hk --> rec["录音（按住期间）"]
+    rec --> asr["SenseVoice 本地转写"]
+    asr --> paste["粘贴到当前窗口（可选回车）"]
+    cc["Claude Code 钩子<br/>开工 / 做完 / 需要确认"] --> hook["pet_hook.py"]
+    hook --> pet["像素桌宠"]
+    rec -. 状态 .-> pet
+```
+
+- **语音输入**：用系统的 `RegisterHotKey` 注册全局快捷键，按住期间录音，松开后用 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 跑 SenseVoice 模型转写，再通过剪贴板粘贴，原来的剪贴板内容会还原。
+- **桌宠**：一个透明、置顶、不抢焦点的分层窗口，用 Pillow 逐帧画像素。
+- **Claude 联动**：Claude Code 的 `UserPromptSubmit` / `Stop` / `StopFailure` / `Notification` 钩子会调用 `pet_hook.py`，它把事件转发给桌宠。桌宠没开时钩子什么也不做。
+
+## 配置
+
+| 文件 | 内容 | 是否同步 |
+|---|---|---|
+| `config.toml` | 所有电脑共用的默认值：快捷键、提示音、桌宠外观、模型参数等 | 随仓库同步 |
+| `config.local.toml` | 只跟这台电脑有关的：麦克风名字、微信路径、右键菜单里改的颜色和开关 | 不上传 |
+| `ui_state.json` | 桌宠的位置 | 不上传 |
+
+常调的几项：
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| `[pet] character` | `"blob"` | `blob` 团子 / `cat` 小猫 / `bot` 小机器人 |
+| `[pet] body_color` | `"#E08A5C"` | 身体颜色 |
+| `[pet] pixel_size` | `4` | 像素块大小，建议 2–6 |
+| `[pet] sleep_minutes` | `5` | 多久没动静就睡觉 |
+| `[feedback] beep_volume` | `0.08` | 录音开始 / 结束提示音的音量 |
+| `[pet] sound_volume` | `0.3` | 桌宠提示音的音量 |
+| `[replacements]` | 空 | 识别后的固定替换，用来纠正总认错的词 |
+
+改完右键桌宠选「退出」，再重新启动即可生效。
+
+## 隐私
+
+- 语音只在你的电脑上转写，不上传到任何地方。唯一一次联网是第一次启动时从 GitHub 下载语音模型。
+- 日志里默认会记录识别出的文字，方便排查；不想记录就把 `[feedback] log_text` 设成 `false`。
+- 剩余额度：桌面版 Claude 没有官方读取方式，所以桌宠不显示额度数字，右键「查看用量」会直接打开官方的用量页面。
+
+## 常见问题
+
+- **按了没反应 / 快捷键注册失败**：组合键被别的程序占了，在 `[hotkeys]` 里换一个。
+- **粘贴不进去**：前台程序如果是以管理员身份运行的，普通权限的程序没法给它发按键；这时文字会留在剪贴板里，手动粘贴即可。
+- **微信里贴出的是旧内容**：剪贴板还原得太早，调大 `[paste] restore_delay`。
+- **总是认错某个术语**：在 `[replacements]` 里加一条，比如 `"克劳德" = "Claude"`。
+- **桌宠找不到了**（比如跑到拔掉的副屏上）：右键菜单「复位到右下角」，或者重启程序。
+- **Claude 做完了桌宠没反应**：确认 `~/.claude/settings.json` 里有 `pet_hook.py` 的钩子；钩子在会话开始时读取，改完要新开一个会话。
+- **日志在哪**：`logs\pixel_murmur.log`，右键菜单里可以直接打开。
 
 ## 其他命令
 
-- `python voice_input.py --list-devices`：列出麦克风，把名字里的一段填进 `audio.device`。
-- `python voice_input.py --transcribe 某段录音.wav`：单独测 CPU 转写耗时。
+```powershell
+.venv\Scripts\python pixel_murmur.py --list-devices          # 列出麦克风
+.venv\Scripts\python pixel_murmur.py --transcribe 录音.wav    # 单独测一段录音的转写速度
+.venv\Scripts\python pixel_murmur.py --remove-autostart      # 取消开机自启
+```
 
-## 排查
+## 许可证
 
-- 日志在 `logs\voice_input.log`，悬浮窗右键菜单里可以直接打开。
-- “快捷键注册失败”：该组合键被别的程序占了，换一个。
-- 粘贴不进去：前台窗口如果是以管理员身份运行的，普通权限的本程序无法向它发按键。此时文字会留在剪贴板里。
-- 微信里粘贴后剪贴板恢复得太早导致贴出旧内容：调大 `paste.restore_delay`。
-- 总是认错某个术语：在 `[replacements]` 里加一条替换。
-- 桌宠找不到了（比如跑到拔掉的副屏上）：重启程序会自动回到主屏右下角。
-- Claude 做完了桌宠没反应：看 `~/.claude/settings.json` 里的钩子是否还在；钩子在每次会话开始时读取，改完要新开会话。
+[MIT](LICENSE)。本项目与 Anthropic 无关，不是 Claude 的官方产品；「Claude」是 Anthropic 的商标。

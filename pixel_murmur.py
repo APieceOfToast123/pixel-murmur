@@ -2395,6 +2395,76 @@ def cmd_list_devices() -> None:
     print("\n把名字里有辨识度的一段填进 config.toml 的 audio.device 即可。")
 
 
+def cmd_benchmark(cfg: dict) -> None:
+    """用 recordings/ 里存的录音对比几个模型：每句各自的识别结果（已按常用词纠错）和耗时。
+    结果写到 recordings/benchmark-时间.md，只用 CPU。"""
+    import copy
+    import wave
+    index = RECORDINGS_DIR / "index.jsonl"
+    rows = [json.loads(l) for l in index.read_text(encoding="utf-8").splitlines() if l.strip()] \
+        if index.exists() else []
+    rows = [r for r in rows if (RECORDINGS_DIR / r["file"]).exists()]
+    if not rows:
+        sys.exit("recordings/ 里还没有录音：在设置窗口「通用」页打开「保存最近 20 段录音」，正常用一阵再来。")
+    clips = []
+    for r in rows:
+        with wave.open(str(RECORDINGS_DIR / r["file"]), "rb") as w:
+            pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+        clips.append((r, pcm.astype(np.float32) / 32768.0))
+
+    def variant(backend: str, use_vocab: bool, model: str = "large-v3-turbo") -> dict:
+        c = copy.deepcopy(cfg)
+        c["model"]["backend"] = backend
+        c["model"]["whisper_model"] = model
+        c["model"]["threads"] = max(int(c["model"]["threads"]), 8)
+        if not use_vocab:
+            c["model"]["whisper_prompt"] = ""
+            c["vocab"]["terms"] = []
+        return c
+
+    variants = [("SenseVoice", variant("sensevoice", True))]
+    try:
+        import faster_whisper  # noqa: F401
+        variants += [("Whisper turbo", variant("whisper", False)),
+                     ("Whisper turbo + 常用词提示", variant("whisper", True))]
+    except ImportError:
+        print("没装 faster-whisper，只测 SenseVoice（pip install faster-whisper 后可对比 Whisper）")
+
+    results = {}
+    for name, c in variants:
+        tr = Transcriber(c)
+        t0 = time.monotonic()
+        tr.load()
+        load = time.monotonic() - t0
+        out = []
+        for r, audio in clips:
+            t0 = time.monotonic()
+            raw = tr.transcribe(audio)
+            out.append((fix_text(raw, c), time.monotonic() - t0))
+        results[name] = (load, out)
+        avg = sum(t for _, t in out) / len(out)
+        print(f"{name}：加载 {load:.1f} 秒，平均每句 {avg:.2f} 秒")
+        del tr
+
+    names = [n for n, _ in variants]
+    total_audio = sum(len(a) for _, a in clips) / TARGET_SR
+    lines = [f"# 语音模型对比（{time.strftime('%Y-%m-%d %H:%M')}）", "",
+             f"{len(clips)} 段录音，共 {total_audio:.0f} 秒；只用 CPU；结果都已按常用词纠错。", "",
+             "| 模型 | 加载 | 平均每句 | 最慢一句 |", "|---|---|---|---|"]
+    for n in names:
+        load, out = results[n]
+        ts = [t for _, t in out]
+        lines.append(f"| {n} | {load:.1f} 秒 | {sum(ts) / len(ts):.2f} 秒 | {max(ts):.2f} 秒 |")
+    lines += ["", "## 逐句对比", "", "| # | 时长 | " + " | ".join(names) + " |",
+              "|---|---|" + "---|" * len(names)]
+    for i, (r, _) in enumerate(clips):
+        cells = [results[n][1][i][0].replace("|", "\\|") for n in names]
+        lines.append(f"| {i + 1} | {r['seconds']:.1f}s | " + " | ".join(cells) + " |")
+    report = RECORDINGS_DIR / f"benchmark-{time.strftime('%Y%m%d-%H%M%S')}.md"
+    report.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("报告：", report)
+
+
 def cmd_transcribe(path: str, cfg: dict) -> None:
     import wave
     with wave.open(path, "rb") as w:
@@ -2908,6 +2978,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Pixel Murmur：为 vibe coding 而生的语音输入 + 像素桌宠")
     ap.add_argument("--list-devices", action="store_true")
     ap.add_argument("--transcribe", metavar="WAV")
+    ap.add_argument("--benchmark", action="store_true", help="用保存的录音对比各个语音模型")
     ap.add_argument("--install-autostart", action="store_true")
     ap.add_argument("--remove-autostart", action="store_true")
     ap.add_argument("--setup", action="store_true", help="新电脑一键设置")
@@ -2921,6 +2992,8 @@ def main() -> None:
         return cmd_list_devices()
     if args.transcribe:
         return cmd_transcribe(args.transcribe, cfg)
+    if args.benchmark:
+        return cmd_benchmark(cfg)
     if not IS_WIN:
         sys.exit("常驻模式只支持 Windows")
     if args.install_autostart or args.remove_autostart:

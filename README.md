@@ -41,7 +41,7 @@
 | 你单击它 | 被摸摸头（小手拍拍、眯眼、冒一颗心），同时把 Claude 切到前台 |
 
 - **拖动**换位置，重启后还在原处；在屏幕哪一侧，胶囊和气泡就往另一侧展开。
-- **右键**打开菜单：每种提醒单独开关、查看用量、录音颜色、复位到右下角、打开配置 / 日志、退出。
+- **右键**打开菜单：每种提醒单独开关、查看用量、录音颜色、快捷键设置…、复位到右下角、打开配置 / 日志、退出。
 - 拖动、单击、右键都**不会抢走**你正在打字的窗口的焦点。
 
 ## 推荐硬件
@@ -51,9 +51,13 @@
 | 手柄 | 8BitDo Micro（键盘模式） | 任何能把按键映射成键盘组合键的手柄或宏键盘 |
 | 麦克风 | 大疆无线麦克风 | 任何麦克风；电脑自带的也能用 |
 
-没有手柄也行：所有功能都是普通的全局快捷键，直接在键盘上按也一样。
+没有手柄也完全能用，见下面的[只用键盘](#只用键盘快捷键设置)。
 
-### 手柄按键（8BitDo Micro）
+### 手柄键位（8BitDo Micro，供参考）
+
+<p align="center">
+  <img src="docs/controller.png" alt="8BitDo Micro 手柄键位图" width="100%">
+</p>
 
 | 手柄 | 发出的按键 | 作用 |
 |---|---|---|
@@ -67,7 +71,30 @@
 | **R2** | Ctrl+Enter | 发送 |
 | **↑ / ↓** | 方向键 | 上下选择 |
 
-组合键在 `config.toml` 的 `[hotkeys]` 里改；手柄那头在 8BitDo 的 App 里映射。
+手柄那头在 8BitDo 的 App 里把按键映射成上面这些组合键；电脑这头的组合键可以在「快捷键设置」里改。
+
+## 只用键盘：快捷键设置
+
+右键桌宠 →「**快捷键设置…**」打开设置窗口。点「修改」后直接按下想要的组合键就能录进去，保存后立即生效，不用重启。
+
+<p align="center">
+  <img src="docs/settings.png" alt="快捷键设置窗口" width="480">
+</p>
+
+顶部可以一键套用两套方案，之后还能逐个改：
+
+| 功能 | 手柄方案 | 键盘方案 |
+|---|---|---|
+| 说话（按住） | Ctrl+Alt+Shift+F9 | **CapsLock** |
+| 说话并发送（按住） | Ctrl+Alt+Shift+F10 | Shift+CapsLock |
+| 取消 | Ctrl+Alt+Shift+F12 | Ctrl+CapsLock |
+| 唤起 Claude | Ctrl+Alt+Shift+F8 | Ctrl+Alt+C |
+| 唤起微信 | Ctrl+Alt+Shift+F11 | Ctrl+Alt+W |
+
+- 键盘方案用 CapsLock「按住说话」：在小拇指边上，键大好按，平时也很少用。被占用后它不会再切换大小写（程序会自动把状态切回来），要打大写请按住 Shift。
+- 单独一个键只能用 CapsLock、Pause、ScrollLock、Insert、F13–F24；其他键必须带 Ctrl / Alt / Shift，免得拦住平时打字。和输入法、系统冲突的组合（如 Ctrl+Space、Alt+Tab）会直接提示不能用。
+- 录入时会检查是否和其他功能重复、是否已被别的程序占用。微信默认就占用了 Ctrl+Alt+W（它本身也能唤起微信），遇到这个提示可以直接清空「唤起微信」这一项。
+- 新电脑运行安装时，第一步会问你用手柄还是键盘，选键盘就直接套用键盘方案。
 
 ## 安装
 
@@ -80,12 +107,12 @@ git clone https://github.com/APieceOfToast123/pixel-murmur C:\pixel-murmur
 然后双击 `C:\pixel-murmur\install.bat`，它会依次：
 
 1. 建虚拟环境并安装依赖；
-2. 列出麦克风，让你输入编号选一个；
+2. 问你用手柄还是键盘（选键盘就套用键盘方案），再列出麦克风让你输入编号选一个；
 3. 自动找到微信的安装位置；
 4. 把桌宠的钩子合并进 `~/.claude/settings.json`（原文件先备份到 `backup\`，你已有的设置和钩子都保留）；
 5. 设好开机自启，并在后台启动。第一次启动会下载 SenseVoice 语音模型（约 160 MB）。
 
-装好后打开记事本，按住 B（或 Ctrl+Alt+Shift+F9）说一句话，松开，就会出字。
+装好后打开记事本，按住「说话」键（手柄 B / 键盘方案 CapsLock / 默认 Ctrl+Alt+Shift+F9）说一句话，松开，就会出字。
 
 想重新选麦克风或重新挂钩子，随时再运行：
 
@@ -142,7 +169,7 @@ flowchart LR
 
 ## 常见问题
 
-- **按了没反应 / 快捷键注册失败**：组合键被别的程序占了，在 `[hotkeys]` 里换一个。
+- **按了没反应 / 快捷键注册失败**：组合键被别的程序占了，右键桌宠「快捷键设置…」换一个。
 - **粘贴不进去**：前台程序如果是以管理员身份运行的，普通权限的程序没法给它发按键；这时文字会留在剪贴板里，手动粘贴即可。
 - **微信里贴出的是旧内容**：剪贴板还原得太早，调大 `[paste] restore_delay`。
 - **总是认错某个术语**：在 `[replacements]` 里加一条，比如 `"克劳德" = "Claude"`。
@@ -153,6 +180,7 @@ flowchart LR
 ## 其他命令
 
 ```powershell
+.venv\Scripts\python pixel_murmur.py --hotkey-settings       # 打开快捷键设置窗口
 .venv\Scripts\python pixel_murmur.py --list-devices          # 列出麦克风
 .venv\Scripts\python pixel_murmur.py --transcribe 录音.wav    # 单独测一段录音的转写速度
 .venv\Scripts\python pixel_murmur.py --remove-autostart      # 取消开机自启

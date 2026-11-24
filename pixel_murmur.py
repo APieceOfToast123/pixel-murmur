@@ -427,6 +427,7 @@ if IS_WIN:
     _sig(user32.DispatchMessageW, ctypes.c_ssize_t, ctypes.POINTER(wt.MSG))
 
 WM_HOTKEY = 0x0312
+WM_APP_FIXCAPS = 0x8001  # WM_APP + 1：松开 CapsLock 后把大小写状态切回来
 WM_QUIT = 0x0012
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
 VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN = 0x10, 0x11, 0x12, 0x5B, 0x5C
@@ -441,9 +442,30 @@ _CLIP_SAVE_LIMIT = 64 << 20
 
 _MODS = {"ctrl": MOD_CONTROL, "control": MOD_CONTROL, "alt": MOD_ALT,
          "shift": MOD_SHIFT, "win": MOD_WIN}
+VK_CAPITAL = 0x14
 _NAMED_KEYS = {"space": 0x20, "enter": 0x0D, "tab": 0x09, "esc": 0x1B, "pause": 0x13,
                "scrolllock": 0x91, "insert": 0x2D, "home": 0x24, "end": 0x23,
-               "pageup": 0x21, "pagedown": 0x22}
+               "pageup": 0x21, "pagedown": 0x22, "capslock": VK_CAPITAL, "delete": 0x2E,
+               "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "`": 0xC0}
+# 设置窗口里显示用的写法（config 里一律存小写，如 "shift+capslock"）
+_KEY_DISPLAY = {"ctrl": "Ctrl", "control": "Ctrl", "alt": "Alt", "shift": "Shift", "win": "Win",
+                "capslock": "CapsLock", "scrolllock": "ScrollLock", "pageup": "PageUp",
+                "pagedown": "PageDown", "esc": "Esc"}
+
+
+def hotkey_display(spec: str) -> str:
+    """'shift+capslock' -> 'Shift+CapsLock'"""
+    out = []
+    for p in spec.lower().replace(" ", "").split("+"):
+        if not p:
+            continue
+        if p in _KEY_DISPLAY:
+            out.append(_KEY_DISPLAY[p])
+        elif len(p) == 1 or (p[0] == "f" and p[1:].isdigit()):
+            out.append(p.upper())
+        else:
+            out.append(p.capitalize())
+    return "+".join(out)
 
 
 def parse_hotkey(spec: str) -> tuple[int, int]:
@@ -796,6 +818,9 @@ if IS_WIN:
     _sig(user32.GetCursorPos, wt.BOOL, ctypes.POINTER(wt.POINT))
     _sig(user32.LoadCursorW, wt.HANDLE, wt.HINSTANCE, ctypes.c_void_p)
     _sig(user32.SetCursor, wt.HANDLE, wt.HANDLE)
+    _sig(user32.FindWindowW, wt.HWND, wt.LPCWSTR, wt.LPCWSTR)
+    _sig(user32.SendMessageTimeoutW, LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM, wt.UINT,
+         wt.UINT, ctypes.POINTER(ctypes.c_size_t))
     _sig(kernel32.GetModuleHandleW, wt.HMODULE, wt.LPCWSTR)
     _sig(gdi32.CreateCompatibleDC, wt.HDC, wt.HDC)
     _sig(gdi32.DeleteDC, wt.BOOL, wt.HDC)
@@ -938,6 +963,7 @@ class Overlay:
         self._snd_alert = _tone_wav([1047, 784], 360, vol, wave_shape="chip")       # 下行叮咚
         self.on_quit = on_quit
         self.on_click = on_click
+        self.on_command = None          # App 设置：处理设置窗口发来的指令
         self.hwnd = None
         self._lock = threading.Lock()
         self._base = "loading"          # 语音输入：loading / idle / recording / busy
@@ -1126,7 +1152,11 @@ class Overlay:
                 cds = ctypes.cast(ctypes.c_void_p(lp), ctypes.POINTER(COPYDATASTRUCT)).contents
                 if cds.dwData == PET_MSG_MAGIC and 0 < cds.cbData < 65536:
                     ev = json.loads(ctypes.string_at(cds.lpData, cds.cbData).decode("utf-8"))
-                    self.pet_event(ev)
+                    if "cmd" in ev:           # 设置窗口发来的指令（暂停 / 恢复 / 重载快捷键）
+                        if self.on_command:
+                            self.on_command(ev)
+                    else:                     # Claude Code 钩子发来的事件
+                        self.pet_event(ev)
                 return 1
             if msg == WM_TIMER:
                 self._render()
@@ -1222,6 +1252,7 @@ class Overlay:
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(menu, MF_STRING, 4, "查看用量")
         user32.AppendMenuW(menu, MF_POPUP, sub, "录音颜色")
+        user32.AppendMenuW(menu, MF_STRING, 5, "快捷键设置…")
         user32.AppendMenuW(menu, MF_STRING, 1, "复位到右下角")
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(menu, MF_STRING, 2, "打开配置文件")
@@ -1235,7 +1266,7 @@ class Overlay:
                                     pt.x, pt.y, 0, self.hwnd, None)
         user32.PostMessageW(self.hwnd, WM_NULL, 0, 0)
         user32.DestroyMenu(menu)  # 子菜单随之销毁
-        if prev and cmd not in (2, 3, 4, 110):
+        if prev and cmd not in (2, 3, 4, 5, 110):
             user32.SetForegroundWindow(prev)
         if 100 <= cmd < 100 + len(self.COLORS):
             self._set_color(self.COLORS[cmd - 100][1])
@@ -1245,6 +1276,9 @@ class Overlay:
                 user32.SetForegroundWindow(prev)
         elif 200 <= cmd < 200 + len(self.PET_OPTS):
             self._toggle(self.PET_OPTS[cmd - 200][0])
+        elif cmd == 5:
+            if self.on_command:
+                self.on_command({"cmd": "open_settings"})
         elif cmd == 1:
             self.reset_position()
         elif cmd == 2:
@@ -1646,7 +1680,9 @@ class App:
         self._main_tid = kernel32.GetCurrentThreadId()
         self.beep = Beeper(cfg["feedback"])
         self.overlay = Overlay(cfg, self.quit, lambda: self._focus("focus", toggle=False))
+        self.overlay.on_command = self._command
         self._hotkeys: dict[int, tuple[str, int]] = {}
+        self._paused_at = 0.0           # 设置窗口录入新快捷键期间暂停全部快捷键
 
     # ── 生命周期 ──
 
@@ -1656,19 +1692,30 @@ class App:
         threading.Thread(target=self._housekeeping, daemon=True).start()
         self.jobs.put(("preload",))
         self._register_hotkeys()
+        user32.SetTimer(None, 0, 1000, None)  # 线程计时器：检查暂停是否超时
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            if msg.message == WM_HOTKEY and not msg.hWnd:
-                action, vk = self._hotkeys.get(int(msg.wParam), ("", 0))
+            if not msg.hWnd:
                 try:
-                    self._dispatch(action, vk)
+                    if msg.message == WM_HOTKEY:
+                        action, vk = self._hotkeys.get(int(msg.wParam), ("", 0))
+                        self._dispatch(action, vk)
+                        continue
+                    if msg.message == WM_APP_FIXCAPS:
+                        self._restore_capslock()
+                        continue
+                    if msg.message == WM_TIMER:
+                        # 设置窗口万一崩了没发“恢复”，最多暂停 10 秒就自动恢复
+                        if self._paused_at and time.monotonic() - self._paused_at > 10:
+                            log.warning("快捷键暂停超过 10 秒，自动恢复")
+                            self._resume_hotkeys()
+                        continue
                 except Exception:
-                    log.exception("处理快捷键 %s 时出错", action)
-                continue
+                    log.exception("处理线程消息 0x%X 时出错", msg.message)
+                    continue
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
-        for hk_id in self._hotkeys:
-            user32.UnregisterHotKey(None, hk_id)
+        self._unregister_hotkeys()
         self.overlay.destroy()
         log.info("已退出")
 
@@ -1677,7 +1724,7 @@ class App:
 
     _ACTIONS = {"talk", "talk_send", "cancel", "focus", "focus_wechat"}
 
-    def _register_hotkeys(self) -> None:
+    def _register_hotkeys(self, quiet: bool = False) -> None:
         failed = []
         for i, (action, spec) in enumerate(self.cfg["hotkeys"].items(), start=1):
             if not spec:
@@ -1685,16 +1732,76 @@ class App:
             if action not in self._ACTIONS:
                 log.warning("config.toml 里有不认识的快捷键项 %s，已忽略", action)
                 continue
-            mods, vk = parse_hotkey(spec)
+            try:
+                mods, vk = parse_hotkey(spec)
+            except ValueError as e:
+                failed.append(f"{action}={spec}（{e}）")
+                continue
             if user32.RegisterHotKey(None, i, mods | MOD_NOREPEAT, vk):
                 self._hotkeys[i] = (action, vk)
-                log.info("快捷键 %-9s = %s", action, spec)
+                if not quiet:
+                    log.info("快捷键 %-12s = %s", action, spec)
             else:
                 failed.append(f"{action}={spec}")
-        if failed:
+        if failed and not quiet:  # 暂停后恢复、CapsLock 还原时重注册，不重复报同一个错
             text = "快捷键注册失败（被其他程序占用？）：" + "，".join(failed)
             log.error(text)
             self.overlay.message("快捷键注册失败，见日志", "error", 6.0)
+
+    def _unregister_hotkeys(self) -> None:
+        for hk_id in list(self._hotkeys):
+            user32.UnregisterHotKey(None, hk_id)
+        self._hotkeys.clear()
+
+    def _resume_hotkeys(self) -> None:
+        self._paused_at = 0.0
+        if not self._hotkeys:
+            self._register_hotkeys(quiet=True)
+
+    def _command(self, ev: dict) -> None:
+        """设置窗口发来的指令（在主线程上执行，快捷键注册是按线程算的）。"""
+        cmd = ev.get("cmd")
+        if cmd == "pause_hotkeys":
+            self._unregister_hotkeys()
+            self._paused_at = time.monotonic()
+        elif cmd == "resume_hotkeys":
+            self._resume_hotkeys()
+        elif cmd == "reload_hotkeys":
+            self.cfg["hotkeys"] = load_config()["hotkeys"]
+            self._unregister_hotkeys()
+            self._paused_at = 0.0
+            log.info("快捷键已更新")
+            self._register_hotkeys()
+        elif cmd == "open_settings":
+            pythonw = Path(sys.executable).with_name("pythonw.exe")
+            subprocess.Popen([str(pythonw), str(Path(__file__).resolve()), "--hotkey-settings"],
+                             cwd=str(BASE))
+
+    # ── CapsLock 当快捷键 ──
+    # 系统在按下 CapsLock 时就切换了大小写，注册成快捷键也拦不住。
+    # 做法：等用户松开后，临时注销快捷键、替他再按一次 CapsLock 把状态切回来，再注册回去。
+
+    def _request_caps_fix(self, vk: int) -> None:
+        if vk != VK_CAPITAL:
+            return
+
+        def wait_release():
+            deadline = time.monotonic() + 10
+            while key_down(VK_CAPITAL) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            user32.PostThreadMessageW(self._main_tid, WM_APP_FIXCAPS, 0, 0)
+
+        threading.Thread(target=wait_release, daemon=True).start()
+
+    def _restore_capslock(self) -> None:
+        if self._paused_at:
+            return
+        self._unregister_hotkeys()
+        try:
+            send_keys(VK_CAPITAL)
+            time.sleep(0.08)  # 等系统处理完这次按键，再把快捷键注册回去
+        finally:
+            self._register_hotkeys(quiet=True)
 
     def _dispatch(self, action: str, vk: int) -> None:
         if action in ("talk", "talk_send"):
@@ -1715,6 +1822,8 @@ class App:
             log.info("取消")
         elif action in ("focus", "focus_wechat"):
             self._focus(action)
+        if action not in ("talk", "talk_send"):
+            self._request_caps_fix(vk)   # 说话类在松开、录音结束后再修
 
     def _focus(self, section: str, toggle: bool = True) -> None:
         """唤起目标程序。toggle=True（手柄 +/−）：已经在前台就把它最小化；
@@ -1769,6 +1878,7 @@ class App:
                 ole32.CoUninitialize()
             with self._state_lock:
                 self._recording = False
+            self._request_caps_fix(vk)
         if result is None:
             self.overlay.set("idle")
             return
@@ -2065,13 +2175,154 @@ def _find_wechat() -> str:
     return next((p for p in _WECHAT_GUESSES if Path(p).exists()), "")
 
 
+# ───────────────────────────── 快捷键设置窗口 ─────────────────────────────
+# 独立进程（--hotkey-settings），用 pywebview 显示 ui/hotkeys.html。
+# 录入新组合键时通过 WM_COPYDATA 让主程序暂停快捷键，否则按下的组合会被主程序截走。
+
+HOTKEY_ACTIONS = [
+    ("talk", "说话", "按住说，松开粘贴", True),
+    ("talk_send", "说话并发送", "松开后再按回车", True),
+    ("cancel", "取消", "作废这一句", False),
+    ("focus", "唤起 Claude", "在前台时再按 = 最小化", False),
+    ("focus_wechat", "唤起微信", "在前台时再按 = 最小化", False),
+]
+PAD_PRESET = {"talk": "ctrl+alt+shift+f9", "talk_send": "ctrl+alt+shift+f10",
+              "cancel": "ctrl+alt+shift+f12", "focus": "ctrl+alt+shift+f8",
+              "focus_wechat": "ctrl+alt+shift+f11"}
+KEYBOARD_PRESET = {"talk": "capslock", "talk_send": "shift+capslock", "cancel": "ctrl+capslock",
+                   "focus": "ctrl+alt+c", "focus_wechat": "ctrl+alt+w"}
+SETTINGS_TITLE = "快捷键设置 — Pixel Murmur"
+
+
+def send_to_app(obj: dict) -> bool:
+    """把一条指令发给正在运行的主程序（桌宠窗口）。主程序没开时返回 False。"""
+    hwnd = user32.FindWindowW("PixelMurmurOverlay", None)
+    if not hwnd:
+        return False
+    payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    buf = ctypes.create_string_buffer(payload, len(payload))
+    cds = COPYDATASTRUCT(PET_MSG_MAGIC, len(payload), ctypes.cast(buf, ctypes.c_void_p))
+    result = ctypes.c_size_t()
+    user32.SendMessageTimeoutW(hwnd, WM_COPYDATA, 0, ctypes.addressof(cds), 0x0002, 2000,
+                               ctypes.byref(result))
+    return True
+
+
+def write_hotkeys(mapping: dict) -> None:
+    """把 {动作: 组合键} 写进 config.local.toml 的 [hotkeys]（空字符串 = 停用）。"""
+    for action, _, _, _ in HOTKEY_ACTIONS:
+        if action in mapping:
+            write_config_value("hotkeys", action, json.dumps(mapping[action].lower()))
+
+
+class HotkeySettingsApi:
+    """给 ui/hotkeys.html 调用的接口（pywebview js_api）。"""
+
+    def __init__(self):
+        self.window = None
+
+    def state(self) -> dict:
+        cur = load_config()["hotkeys"]
+        current = {a: hotkey_display(cur.get(a) or "") for a, _, _, _ in HOTKEY_ACTIONS}
+        norm = {a: (cur.get(a) or "").lower().replace(" ", "") for a, _, _, _ in HOTKEY_ACTIONS}
+        preset = "pad" if norm == PAD_PRESET else "keyboard" if norm == KEYBOARD_PRESET else "custom"
+        return {
+            "actions": [{"id": a, "label": l, "desc": d, "hold": h} for a, l, d, h in HOTKEY_ACTIONS],
+            "current": current,
+            "pad": {a: hotkey_display(s) for a, s in PAD_PRESET.items()},
+            "keyboard": {a: hotkey_display(s) for a, s in KEYBOARD_PRESET.items()},
+            "preset": preset,
+            "app_running": bool(user32.FindWindowW("PixelMurmurOverlay", None)),
+        }
+
+    def pause(self) -> None:
+        send_to_app({"cmd": "pause_hotkeys"})
+
+    def resume(self) -> None:
+        send_to_app({"cmd": "resume_hotkeys"})
+
+    def check(self, combo: str) -> dict:
+        """试着向系统注册一下，看是否被别的程序占用（调用时主程序的快捷键处于暂停状态）。"""
+        try:
+            mods, vk = parse_hotkey(combo)
+        except ValueError as e:
+            return {"ok": False, "msg": str(e)}
+        if user32.RegisterHotKey(None, 0xBFFF, mods | MOD_NOREPEAT, vk):
+            user32.UnregisterHotKey(None, 0xBFFF)
+            return {"ok": True}
+        if hotkey_display(combo) == "Ctrl+Alt+W":
+            return {"ok": False, "msg": "Ctrl+Alt+W 已被占用，多半是微信自己的快捷键，"
+                                        "它本身就能唤起微信，可以直接清空这一项"}
+        return {"ok": False, "msg": f"{hotkey_display(combo)} 已被别的程序占用，换一个吧"}
+
+    def save(self, mapping: dict) -> dict:
+        try:
+            write_hotkeys(mapping)
+        except Exception as e:
+            log.exception("保存快捷键失败")
+            return {"ok": False, "msg": f"保存失败：{e}"}
+        running = send_to_app({"cmd": "reload_hotkeys"})
+        log.info("快捷键设置已保存：%s", mapping)
+        return {"ok": True, "applied": running}
+
+    def minimize(self) -> None:
+        if self.window:
+            self.window.minimize()
+
+    def close(self) -> None:
+        self.resume()
+        if self.window:
+            self.window.destroy()
+
+
+def cmd_hotkey_settings() -> None:
+    mutex = kernel32.CreateMutexW(None, False, "Local\\PixelMurmurSettings")
+    if ctypes.get_last_error() == 183:  # 已经开着：切到前台就好
+        hwnd = user32.FindWindowW(None, SETTINGS_TITLE)
+        if hwnd:
+            focus_window(hwnd)
+        return
+    _ = mutex
+    import webview
+    api = HotkeySettingsApi()
+    api._window = webview.create_window(
+        SETTINGS_TITLE, url=str(BASE / "ui" / "hotkeys.html"), js_api=api,
+        width=640, height=680, resizable=False, frameless=True, easy_drag=False,
+        background_color="#161B24")
+    try:
+        webview.start()
+    finally:
+        api.resume()  # 不管怎么关的窗口，都别让主程序的快捷键一直停着
+
+
+def _choose_input_style() -> None:
+    print("  [1] 手柄（8BitDo 等，按键映射成组合键）")
+    print("  [2] 只用键盘（按住 CapsLock 说话）")
+    try:
+        choice = input("  输入编号（直接回车 = 手柄）：").strip()
+    except EOFError:
+        print()
+        choice = ""
+    if choice == "2":
+        write_hotkeys(KEYBOARD_PRESET)
+        print("  已套用键盘方案，之后可在桌宠右键菜单「快捷键设置…」里改。")
+    else:
+        print("  使用手柄方案（Ctrl+Alt+Shift+F 键），在手柄的映射软件里把按键映射成这些组合。")
+
+
 def cmd_setup(cfg: dict) -> None:
-    """新电脑一键设置：选麦克风、找微信、挂 Claude 钩子、开机自启、启动。"""
+    """新电脑一键设置：手柄还是键盘、选麦克风、找微信、挂 Claude 钩子、开机自启、启动。"""
     print("== Pixel Murmur：本机设置 ==")
     if not LOCAL_CONFIG_PATH.exists():
         LOCAL_CONFIG_PATH.write_text(_LOCAL_HEADER, encoding="utf-8")
+    interactive = bool(sys.stdin and sys.stdin.isatty())
+    print("\n0. 你用手柄还是键盘？")
+    if interactive:
+        _choose_input_style()
+    else:
+        print("  （不是在命令行窗口里运行，跳过；默认手柄方案，可在「快捷键设置…」里改）")
     print("\n1. 麦克风")
-    if sys.stdin and sys.stdin.isatty():
+    if interactive:
         _choose_microphone(cfg)
     else:
         print("  （不是在命令行窗口里运行，跳过；之后可改 config.local.toml 的 audio.device）")
@@ -2095,7 +2346,8 @@ def cmd_setup(cfg: dict) -> None:
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     subprocess.Popen([str(pythonw), str(Path(__file__).resolve())], cwd=str(BASE))
     print("  已在后台启动（已经在运行的话这次会自动退出）。第一次启动会下载约 160 MB 的模型。")
-    print("\n完成。手柄连上这台电脑、在 8BitDo App 里确认按键映射后就能用。")
+    print("\n完成。用手柄的话，在手柄的映射软件里确认按键映射后就能用；"
+          "快捷键随时可以在桌宠右键菜单「快捷键设置…」里改。")
 
 
 def main() -> None:
@@ -2105,6 +2357,7 @@ def main() -> None:
     ap.add_argument("--install-autostart", action="store_true")
     ap.add_argument("--remove-autostart", action="store_true")
     ap.add_argument("--setup", action="store_true", help="新电脑一键设置")
+    ap.add_argument("--hotkey-settings", action="store_true", help="打开快捷键设置窗口")
     args = ap.parse_args()
 
     setup_logging()
@@ -2120,6 +2373,8 @@ def main() -> None:
         return cmd_autostart(args.install_autostart)
     if args.setup:
         return cmd_setup(cfg)
+    if args.hotkey_settings:
+        return cmd_hotkey_settings()
 
     # 单实例
     mutex = kernel32.CreateMutexW(None, False, "Local\\PixelMurmur")

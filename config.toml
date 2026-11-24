@@ -74,12 +74,13 @@ pixel_size = 4                # 一个像素块的大小（逻辑像素），建
 fps = 8                       # 动画速度（帧/秒），建议 4–12
 sound_volume = 0.3            # 桌宠提示音音量 0–1
 sleep_minutes = 5             # 多少分钟没动静就睡觉
-# 以下 5 项可以在右键菜单里直接开关，开关结果写进 config.local.toml
+# 以下 6 项可以在右键菜单里直接开关，开关结果写进 config.local.toml
 done_sound = true             # 做完时叫一声
 done_bubble = true            # 做完时气泡显示回复开头
 alert = true                  # 需要确认时提醒（头顶冒「!」，点一下桌宠消失）
 typing = true                 # 干活时敲键盘
 sleep = true                  # 闲置时睡觉
+unread = true                 # 做完了你还没回 Claude 看时，桌宠头上亮小红点（多个显示数字）
 
 [sounds]
 # 自定义提示音（WAV / MP3），相对程序目录；留空 = 用内置合成音。

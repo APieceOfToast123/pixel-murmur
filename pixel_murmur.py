@@ -138,6 +138,7 @@ DEFAULTS: dict = {
         "alert": True,
         "typing": True,
         "sleep": True,
+        "unread": True,
         "sleep_minutes": 5,
     },
     "sounds": {"start": "", "stop": "", "cancel": "", "error": "", "done": "", "alert": ""},
@@ -844,7 +845,6 @@ class SoundBank:
 
 if IS_WIN:
     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
-    comdlg32 = ctypes.WinDLL("comdlg32")
     LRESULT = ctypes.c_ssize_t
     WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)
 
@@ -872,12 +872,6 @@ if IS_WIN:
     class MONITORINFO(ctypes.Structure):
         _fields_ = [("cbSize", wt.DWORD), ("rcMonitor", wt.RECT), ("rcWork", wt.RECT),
                     ("dwFlags", wt.DWORD)]
-
-    class CHOOSECOLORW(ctypes.Structure):
-        _fields_ = [("lStructSize", wt.DWORD), ("hwndOwner", wt.HWND), ("hInstance", wt.HWND),
-                    ("rgbResult", wt.DWORD), ("lpCustColors", ctypes.POINTER(wt.DWORD)),
-                    ("Flags", wt.DWORD), ("lCustData", wt.LPARAM), ("lpfnHook", ctypes.c_void_p),
-                    ("lpTemplateName", wt.LPCWSTR)]
 
     class COPYDATASTRUCT(ctypes.Structure):
         _fields_ = [("dwData", ctypes.c_size_t), ("cbData", wt.DWORD), ("lpData", ctypes.c_void_p)]
@@ -917,7 +911,6 @@ if IS_WIN:
          ctypes.POINTER(ctypes.c_void_p), wt.HANDLE, wt.DWORD)
     _sig(gdi32.SelectObject, wt.HGDIOBJ, wt.HDC, wt.HGDIOBJ)
     _sig(gdi32.DeleteObject, wt.BOOL, wt.HGDIOBJ)
-    _sig(comdlg32.ChooseColorW, wt.BOOL, ctypes.POINTER(CHOOSECOLORW))
 
 WS_POPUP = 0x80000000
 WS_EX_TOPMOST, WS_EX_TOOLWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE = 0x8, 0x80, 0x80000, 0x8000000
@@ -1069,6 +1062,44 @@ def load_sprite_sheet(img, cell: int) -> list[list]:
     return rows
 
 
+_DIGITS = {  # 3×5 像素数字
+    "2": ("xxx", "..x", "xxx", "x..", "xxx"), "3": ("xxx", "..x", "xxx", "..x", "xxx"),
+    "4": ("x.x", "x.x", "xxx", "..x", "..x"), "5": ("xxx", "x..", "xxx", "..x", "xxx"),
+    "6": ("xxx", "x..", "xxx", "x.x", "xxx"), "7": ("xxx", "..x", "..x", "..x", "..x"),
+    "8": ("xxx", "x.x", "xxx", "x.x", "xxx"), "9": ("xxx", "x.x", "xxx", "..x", "xxx"),
+}
+
+
+def _draw_badge(img, s: int, count: int) -> None:
+    """在桌宠右上角画未读标记：1 个是像素小红点，2 个以上是带数字的红方块（最多显示 9）。"""
+    from PIL import ImageDraw
+    dr = ImageDraw.Draw(img)
+    ink, red, hi, white = (42, 35, 32, 255), (229, 72, 77, 255), (255, 150, 150, 255), (255, 255, 255, 255)
+
+    def px(x, y, c):
+        dr.rectangle((x * s, y * s, x * s + s - 1, y * s + s - 1), fill=c)
+
+    if count == 1:
+        x0, y0 = PET_OX + 12, PET_OY + 1
+        dot = (".kkkk.", "krrrrk", "krhrrk", "krrrrk", "krrrrk", ".kkkk.")
+        for y, line in enumerate(dot):
+            for x, ch in enumerate(line):
+                if ch != ".":
+                    px(x0 + x, y0 + y, {"k": ink, "r": red, "h": hi}[ch])
+        return
+    x0, y0 = PET_OX + 11, PET_OY
+    for y in range(9):
+        for x in range(7):
+            edge = y in (0, 8) or x in (0, 6)
+            corner = y in (0, 8) and x in (0, 6)
+            if not corner:
+                px(x0 + x, y0 + y, ink if edge else red)
+    for y, line in enumerate(_DIGITS[str(min(count, 9))]):
+        for x, ch in enumerate(line):
+            if ch == "x":
+                px(x0 + 2 + x, y0 + 2 + y, white)
+
+
 def _shade(rgb, f: float) -> tuple[int, int, int]:
     """f > 0 变亮（向白色靠），f < 0 变暗。"""
     return tuple(max(0, min(255, round(v + (255 - v) * f if f > 0 else v * (1 + f)))) for v in rgb)
@@ -1078,9 +1109,9 @@ class Overlay:
     """桌宠悬浮窗。平时是像素小人；按住说话时旁边弹录音胶囊；
     Claude Code 的钩子（pet_hook.py）发来事件时做动作、叫一声、冒气泡。"""
 
-    COLORS = [("红", "#E5484D"), ("橙", "#F76B15"), ("蓝", "#3E63DD"), ("绿", "#30A46C")]
     PET_OPTS = [("done_sound", "做完时叫一声"), ("done_bubble", "做完时气泡显示回复开头"),
-                ("alert", "需要确认时提醒"), ("typing", "干活时敲键盘"), ("sleep", "闲置时睡觉")]
+                ("alert", "需要确认时提醒"), ("typing", "干活时敲键盘"), ("sleep", "闲置时睡觉"),
+                ("unread", "做完没看时显示小红点")]
     USAGE_URL = "https://claude.ai/settings/usage"
     # 胶囊的版式（逻辑像素，乘以 DPI 缩放和 overlay.scale）
     PAD_X, H, GAP, DOT, MARGIN = 14, 38, 10, 10, 16
@@ -1112,6 +1143,8 @@ class Overlay:
         self._celebrate_until = 0.0
         self._alert_until = 0.0
         self._pat_until = 0.0           # 被摸头（单击）动作的结束时间
+        self._unread: dict[str, float] = {}  # 做完了但你还没回到 Claude 看过的会话 -> 完成时间
+        self._fg_checked = 0.0          # 上次检查「Claude 在不在前台」的时间
         self._bubble = None             # (文字, 截止时间, 种类)
         self._activity = now            # 最近一次有动静的时间，用来判断睡觉
         self._pet_state, self._pet_t0 = "idle", now
@@ -1123,7 +1156,6 @@ class Overlay:
         self._move_rect = None
         self._fonts: dict = {}
         self._shadow_cache: dict = {}
-        self._custom_colors = (wt.DWORD * 16)() if IS_WIN else None
         try:
             from PIL import Image, ImageDraw, ImageFilter, ImageFont  # noqa: F401
             self.enabled = True
@@ -1177,7 +1209,11 @@ class Overlay:
     def reload(self, cfg: dict) -> None:
         """设置窗口保存后：换上新的外观、提示音、录音颜色（主线程调用）。"""
         self.cfg = cfg
-        self.color = _hex_rgb(cfg["overlay"]["recording_color"])
+        oc = cfg["overlay"]
+        self.color = _hex_rgb(oc["recording_color"])
+        self.scale = float(oc["scale"])
+        self.opacity = min(max(float(oc["opacity"]), 0.0), 1.0)
+        self._shadow_cache = {}
         self.sounds = SoundBank(cfg)
         self.apply_pet_config(cfg["pet"])
         self._last_key = None
@@ -1219,11 +1255,15 @@ class Overlay:
         self._activity = now
         if name == "UserPromptSubmit":
             self._sessions[sid] = now
+            self._unread.pop(sid, None)          # 你都给这个会话发新消息了，肯定看过了
             self._clear_alert()
         elif name in ("Stop", "StopFailure"):
             self._sessions.pop(sid, None)
             self._clear_alert()
             if name == "Stop":
+                # 做完的时候你不在 Claude 窗口里，就记成「没看」，桌宠头上亮小红点
+                if self.pet_opt["unread"] and not self._claude_in_front():
+                    self._unread[sid] = now
                 self._celebrate_until = now + 2.2
                 if self.pet_opt["done_sound"]:
                     self.sounds.play("done")
@@ -1245,9 +1285,27 @@ class Overlay:
         if self._bubble and self._bubble[2] == "alert":
             self._bubble = None
 
+    def _claude_in_front(self) -> bool:
+        fc = self.cfg.get("focus", {})
+        try:
+            return bool(foreground_root_if(fc.get("process_names", ["claude.exe"]),
+                                           fc.get("title_contains", "")))
+        except Exception:
+            return False
+
+    def _check_unread_seen(self, now: float) -> None:
+        """每 0.3 秒看一眼：Claude 窗口切到前台了，就当你看过了，小红点消失。"""
+        if not self._unread or now - self._fg_checked < 0.3:
+            return
+        self._fg_checked = now
+        if self._claude_in_front():
+            self._unread.clear()
+            self._dirty = True
+
     def _on_click(self) -> None:
         """单击桌宠：摸摸头（一个小动作），关掉“需要你”的提醒、叫醒它，并把 Claude 切到前台。"""
         self._clear_alert()
+        self._unread.clear()                     # 单击会切到 Claude，算看过了
         self._celebrate_until = 0.0
         self._activity = time.monotonic()
         self._pat_until = self._activity + 1.4
@@ -1424,26 +1482,11 @@ class Overlay:
     # ── 菜单 ──
 
     def _show_menu(self) -> None:
+        """右键菜单只留「设置…」和「退出」；开关、颜色、查看用量、复位、配置和日志都在设置窗口的「通用」页。"""
         pt = wt.POINT()
         user32.GetCursorPos(ctypes.byref(pt))
-        cur = "#%02X%02X%02X" % self.color
-        sub = user32.CreatePopupMenu()
-        for i, (name, hx) in enumerate(self.COLORS):
-            user32.AppendMenuW(sub, MF_STRING | (MF_CHECKED if hx == cur else 0), 100 + i, name)
-        user32.AppendMenuW(sub, MF_SEPARATOR, 0, None)
-        custom = not any(hx == cur for _, hx in self.COLORS)
-        user32.AppendMenuW(sub, MF_STRING | (MF_CHECKED if custom else 0), 110, "自定义…")
         menu = user32.CreatePopupMenu()
-        for i, (key, name) in enumerate(self.PET_OPTS):
-            user32.AppendMenuW(menu, MF_STRING | (MF_CHECKED if self.pet_opt[key] else 0), 200 + i, name)
-        user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
-        user32.AppendMenuW(menu, MF_STRING, 4, "查看用量")
-        user32.AppendMenuW(menu, MF_POPUP, sub, "录音颜色")
-        user32.AppendMenuW(menu, MF_STRING, 5, "设置…（快捷键 / 桌宠 / 提示音）")
-        user32.AppendMenuW(menu, MF_STRING, 1, "复位到右下角")
-        user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
-        user32.AppendMenuW(menu, MF_STRING, 2, "打开配置文件")
-        user32.AppendMenuW(menu, MF_STRING, 3, "打开日志")
+        user32.AppendMenuW(menu, MF_STRING, 5, "设置…")
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(menu, MF_STRING, 9, "退出")
         # 菜单要求所属窗口在前台，否则点别处关不掉；关掉后把焦点还给原来的窗口。
@@ -1452,64 +1495,14 @@ class Overlay:
         cmd = user32.TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
                                     pt.x, pt.y, 0, self.hwnd, None)
         user32.PostMessageW(self.hwnd, WM_NULL, 0, 0)
-        user32.DestroyMenu(menu)  # 子菜单随之销毁
-        if prev and cmd not in (2, 3, 4, 5, 110):
+        user32.DestroyMenu(menu)
+        if prev and cmd != 5:
             user32.SetForegroundWindow(prev)
-        if 100 <= cmd < 100 + len(self.COLORS):
-            self._set_color(self.COLORS[cmd - 100][1])
-        elif cmd == 110:
-            self._pick_custom_color()
-            if prev:
-                user32.SetForegroundWindow(prev)
-        elif 200 <= cmd < 200 + len(self.PET_OPTS):
-            self._toggle(self.PET_OPTS[cmd - 200][0])
-        elif cmd == 5:
+        if cmd == 5:
             if self.on_command:
                 self.on_command({"cmd": "open_settings"})
-        elif cmd == 1:
-            self.reset_position()
-        elif cmd == 2:
-            os.startfile(CONFIG_PATH)
-        elif cmd == 3:
-            os.startfile(LOG_PATH)
-        elif cmd == 4:
-            os.startfile(self.USAGE_URL)
         elif cmd == 9:
             self.on_quit()
-
-    def _toggle(self, key: str) -> None:
-        self.pet_opt[key] = not self.pet_opt[key]
-        self.cfg["pet"][key] = self.pet_opt[key]
-        if key == "alert" and not self.pet_opt[key]:
-            self._clear_alert()
-        try:
-            write_config_value("pet", key, "true" if self.pet_opt[key] else "false")
-        except Exception:
-            log.warning("写回 config.toml 失败", exc_info=True)
-        log.info("桌宠设置 %s = %s", key, self.pet_opt[key])
-        self._dirty = True
-
-    def _set_color(self, hx: str) -> None:
-        self.color = _hex_rgb(hx)
-        self.cfg["overlay"]["recording_color"] = hx
-        try:
-            write_config_value("overlay", "recording_color", f'"{hx}"')
-        except Exception:
-            log.warning("写回 config.toml 失败", exc_info=True)
-        log.info("录音颜色改为 %s", hx)
-        self._dirty = True
-
-    def _pick_custom_color(self) -> None:
-        r, g, b = self.color
-        cc = CHOOSECOLORW()
-        cc.lStructSize = ctypes.sizeof(CHOOSECOLORW)
-        cc.hwndOwner = self.hwnd
-        cc.rgbResult = r | (g << 8) | (b << 16)
-        cc.lpCustColors = self._custom_colors
-        cc.Flags = 0x1 | 0x2  # CC_RGBINIT | CC_FULLOPEN
-        if comdlg32.ChooseColorW(ctypes.byref(cc)):
-            v = cc.rgbResult
-            self._set_color("#%02X%02X%02X" % (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF))
 
     # ── 绘制 ──
 
@@ -1550,8 +1543,10 @@ class Overlay:
         el = now - self._pet_t0
         if self._bubble and self._bubble[1] <= now:
             self._bubble = None
+        self._check_unread_seen(now)
+        unread = len(self._unread) if self.pet_opt["unread"] else 0
         pill_live = base in ("recording", "busy")
-        key = (anim, int(el * self.pet_fps), base, st["msg"], self._bubble)
+        key = (anim, int(el * self.pet_fps), base, st["msg"], self._bubble, unread)
         if not (force or st["dirty"] or pill_live or key != self._last_key):
             return
         self._last_key = key
@@ -1560,7 +1555,10 @@ class Overlay:
         k, s = self._k(), self._cell()
         self._pet_w = PET_GW * s
         left = self._expand_left()
-        items = [(self._draw_pet(anim, el, s), 0, 0)]   # 桌宠格子放在 (0, 0)，其他东西相对它摆
+        pet_img = self._draw_pet(anim, el, s)
+        if unread:
+            _draw_badge(pet_img, s, unread)
+        items = [(pet_img, 0, 0)]   # 桌宠格子放在 (0, 0)，其他东西相对它摆
         pill = None
         if base == "recording":
             secs = int(now - st["t0"])
@@ -2020,6 +2018,8 @@ class App:
             self.beep = self.overlay.sounds
             log.info("设置已更新：桌宠=%s，自定义提示音=%s", self.cfg["pet"].get("source"),
                      [k for k, v in self.cfg["sounds"].items() if v] or "无")
+        elif cmd == "reset_position":
+            self.overlay.reset_position()
         elif cmd == "open_settings":
             pythonw = Path(sys.executable).with_name("pythonw.exe")
             subprocess.Popen([str(pythonw), str(Path(__file__).resolve()), "--settings"],
@@ -2546,6 +2546,10 @@ class SettingsApi:
                     "pixelate": bool(pc.get("pixelate", True)), "grid": int(pc.get("grid", 24)),
                     "sheet_cell": int(pc.get("sheet_cell", 32)), "image": image, "sheet": sheet},
             "sounds": sounds,
+            "reminders": {k: bool(pc.get(k, True)) for k, _ in Overlay.PET_OPTS},
+            "overlay": {"recording_color": cfg["overlay"]["recording_color"],
+                        "scale": float(cfg["overlay"]["scale"]),
+                        "opacity": float(cfg["overlay"]["opacity"])},
             "voice_vol": float(fc["beep_volume"]), "pet_vol": float(pc["sound_volume"]),
             "beep_on": bool(fc["beep"]),
             "app_running": bool(user32.FindWindowW("PixelMurmurOverlay", None)),
@@ -2652,6 +2656,15 @@ class SettingsApi:
             for sid, rel in data.get("sounds", {}).items():
                 if sid in SOUND_IDS:
                     write_config_value("sounds", sid, _toml_value(rel or ""))
+            for key, val in data.get("reminders", {}).items():
+                if key in dict(Overlay.PET_OPTS):
+                    write_config_value("pet", key, _toml_value(bool(val)))
+            ov = data.get("overlay", {})
+            if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(ov.get("recording_color", ""))):
+                write_config_value("overlay", "recording_color", _toml_value(ov["recording_color"].upper()))
+            for key in ("scale", "opacity"):
+                if key in ov:
+                    write_config_value("overlay", key, _toml_value(float(ov[key])))
             if "voice_vol" in data:
                 write_config_value("feedback", "beep_volume", _toml_value(float(data["voice_vol"])))
             if "pet_vol" in data:
@@ -2662,6 +2675,26 @@ class SettingsApi:
         running = send_to_app({"cmd": "reload_settings"})
         log.info("设置已保存")
         return {"ok": True, "applied": running}
+
+    # ── 通用页的按钮 ──
+
+    def open_usage(self) -> None:
+        os.startfile(Overlay.USAGE_URL)
+
+    def reset_position(self) -> bool:
+        return send_to_app({"cmd": "reset_position"})
+
+    def open_config(self) -> None:
+        os.startfile(CONFIG_PATH)
+
+    def open_local_config(self) -> None:
+        if not LOCAL_CONFIG_PATH.exists():
+            LOCAL_CONFIG_PATH.write_text(_LOCAL_HEADER, encoding="utf-8")
+        os.startfile(LOCAL_CONFIG_PATH)
+
+    def open_log(self) -> None:
+        if LOG_PATH.exists():
+            os.startfile(LOG_PATH)
 
     # ── 窗口 ──
 

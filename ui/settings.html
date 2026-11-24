@@ -113,6 +113,16 @@
   .srow .src { font-size: 13px; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .srow.custom .src { color: var(--accent-text); }
 
+  /* 通用 */
+  .gen { display: flex; flex-direction: column; gap: 18px; }
+  .gen h2 { margin: 0 0 8px; font-size: 15px; font-weight: 600; }
+  .toggles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .tog { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 6px; background: var(--card); border: 1px solid var(--card-bd); cursor: pointer; }
+  .tog input { margin-top: 2px; flex: none; }
+  .tog b { display: block; font-size: 14px; font-weight: 600; }
+  .tog span { font-size: 12px; color: var(--sub); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
   .foot { flex: none; padding: 12px 24px; display: flex; align-items: center; gap: 10px; background: var(--footer); border-top: 1px solid var(--line); }
   .status { flex: 1; font-size: 13px; color: var(--sub); }
 </style>
@@ -130,13 +140,48 @@
     <div><h1>设置</h1><p>改完点右下角「保存」立即生效；这里的设置只影响这台电脑</p></div>
   </div>
   <div class="tabs" role="tablist">
-    <button data-tab="hotkeys" class="on">快捷键</button>
+    <button data-tab="general" class="on">通用</button>
+    <button data-tab="hotkeys">快捷键</button>
     <button data-tab="pet">桌宠</button>
     <button data-tab="sound">提示音</button>
   </div>
 
+  <!-- ── 通用 ── -->
+  <div class="page on" id="page-general">
+    <div class="gen">
+      <section>
+        <h2>提醒</h2>
+        <div class="toggles" id="toggles"></div>
+        <div class="field" style="margin-top: 12px"><label for="sleep"><span>多久没动静就睡觉（拉到 0 = 不睡觉）</span><span id="sleepVal"></span></label><input id="sleep" type="range" min="0" max="30" step="1"></div>
+      </section>
+      <section>
+        <h2>录音胶囊</h2>
+        <span class="hint">按住说话时桌宠旁边弹出的那个小条（红点 + 计时 + 音量格）。</span>
+        <div class="field" style="margin-top: 10px"><span class="label">录音中的颜色</span><div class="swatches" id="recSwatches"></div></div>
+        <div class="field" style="margin-top: 10px"><label for="pillScale"><span>胶囊大小</span><span id="pillScaleVal"></span></label><input id="pillScale" type="range" min="0.8" max="1.6" step="0.05"></div>
+        <div class="field" style="margin-top: 10px"><label for="pillOpacity"><span>胶囊背景不透明度</span><span id="pillOpacityVal"></span></label><input id="pillOpacity" type="range" min="0.5" max="1" step="0.02"></div>
+      </section>
+      <section>
+        <h2>其他</h2>
+        <div class="actions">
+          <button class="btn" onclick="api().open_usage()">查看用量</button>
+          <button class="btn" id="resetPos">桌宠复位到右下角</button>
+          <button class="btn" onclick="api().open_local_config()">打开本机配置</button>
+          <button class="btn" onclick="api().open_config()">打开共用配置</button>
+          <button class="btn" onclick="api().open_log()">打开日志</button>
+        </div>
+        <div class="note" style="margin-top: 10px">
+          · 「查看用量」打开 Claude 官方的用量页面（桌面版 Claude 没有给程序读取额度的接口，所以桌宠不显示数字）。<br>
+          · 桌宠跑到看不见的地方（比如拔掉的副屏上）时，用「复位到右下角」找回来。<br>
+          · <b>本机配置</b>（config.local.toml）是这台电脑自己的设置，这个窗口里改的都存在这里；<b>共用配置</b>（config.toml）是所有电脑共用的默认值，随 GitHub 同步。改完配置文件要重启 Pixel Murmur 才生效。<br>
+          · 右键桌宠只剩「设置…」和「退出」，其余都在这个窗口里。
+        </div>
+      </section>
+    </div>
+  </div>
+
   <!-- ── 快捷键 ── -->
-  <div class="page on" id="page-hotkeys">
+  <div class="page" id="page-hotkeys">
     <div class="bar">
       <div class="seg" id="presets" role="group" aria-label="预设方案">
         <button data-p="pad">手柄方案</button><button data-p="keyboard">键盘方案</button><button data-p="custom">自定义</button>
@@ -204,7 +249,6 @@
         <div class="divider">
           <div class="field"><label for="ps"><span>大小</span><span id="psVal"></span></label><input id="ps" type="range" min="2" max="6" step="1"></div>
           <div class="field"><label for="fps"><span>动画速度</span><span id="fpsVal"></span></label><input id="fps" type="range" min="3" max="14" step="1"></div>
-          <div class="field"><label for="sleep"><span>多久没动静就睡觉</span><span id="sleepVal"></span></label><input id="sleep" type="range" min="0" max="30" step="1"></div>
         </div>
       </div>
     </div>
@@ -248,7 +292,8 @@ const TRASH = '<path d="M4 7h16"></path><path d="M10 11v6M14 11v6"></path><path 
 
 let S = null, saved = null, toastTimer = null;
 // 当前编辑中的设置（保存时一起发给 Python）
-const D = { hk: {}, preset: 'pad', pet: {}, sounds: {}, soundInfo: {}, voice_vol: 0.08, pet_vol: 0.3 };
+const D = { hk: {}, preset: 'pad', pet: {}, sounds: {}, soundInfo: {}, voice_vol: 0.08, pet_vol: 0.3,
+  rem: {}, ov: { recording_color: '#E5484D', scale: 1, opacity: 0.92 } };
 
 function toast(text, ok = true) {
   const st = $('status');
@@ -259,7 +304,7 @@ function toast(text, ok = true) {
 }
 function snapshot() {
   return JSON.stringify({ hk: D.hk, pet: Object.assign({}, D.pet, { image: D.pet.image && D.pet.image.rel, sheet: D.pet.sheet && D.pet.sheet.rel }),
-    sounds: D.sounds, v: D.voice_vol, p: D.pet_vol });
+    sounds: D.sounds, v: D.voice_vol, p: D.pet_vol, rem: D.rem, ov: D.ov });
 }
 
 /* ────────── 快捷键 ────────── */
@@ -479,7 +524,6 @@ function renderPet() {
     : '选好精灵图后，这里会显示每个动作识别出几帧。';
   $('ps').value = P.pixel_size; $('psVal').textContent = `桌面上约 ${Math.round(16 * P.pixel_size * devicePixelRatio)} 像素高`;
   $('fps').value = P.fps; $('fpsVal').textContent = `${P.fps} 帧/秒`;
-  $('sleep').value = P.sleep_minutes; $('sleepVal').textContent = P.sleep_minutes ? `${P.sleep_minutes} 分钟` : '不睡觉';
   $('anims').innerHTML = ANIMS.map(a => `<button data-a="${a[0]}" class="${a[0] === anim ? 'on' : ''}">${a[1]}</button>`).join('');
   $('anims').querySelectorAll('button').forEach(b => b.onclick = () => { anim = b.dataset.a; animT0 = Date.now(); $('auto').checked = false; renderPet(); });
 }
@@ -488,7 +532,6 @@ $('pixelate').onchange = e => { D.pet.pixelate = e.target.checked; renderAll(); 
 $('grid').oninput = e => { D.pet.grid = +e.target.value; repixel(); renderAll(); };
 $('ps').oninput = e => { D.pet.pixel_size = +e.target.value; renderAll(); };
 $('fps').oninput = e => { D.pet.fps = +e.target.value; renderAll(); };
-$('sleep').oninput = e => { D.pet.sleep_minutes = +e.target.value; renderAll(); };
 $('pickImage').onclick = async () => {
   const r = await api().pick_image(); if (!r) return;
   if (r.error) { toast(r.error, false); return; }
@@ -547,6 +590,36 @@ function renderSounds() {
 $('vv').oninput = e => { D.voice_vol = +e.target.value; renderAll(); };
 $('pv').oninput = e => { D.pet_vol = +e.target.value; renderAll(); };
 
+/* ────────── 通用 ────────── */
+const REMINDERS = [
+  ['done_sound', '做完时叫一声', 'Claude 回答完时响「做完了」提示音'],
+  ['done_bubble', '做完时冒气泡', '气泡里显示回复的第一句，5 秒后消失'],
+  ['alert', '需要确认时提醒', 'Claude 等你批准时头顶冒「!」并叮咚一声，单击桌宠消失'],
+  ['typing', '干活时敲键盘', '你发出消息后，桌宠抱着小键盘敲字，直到 Claude 做完'],
+  ['unread', '做完没看时显示小红点', '你不在 Claude 窗口时做完的任务亮红点（多个显示数字），切回 Claude 或单击桌宠就消失']
+];
+const REC_COLORS = [['#E5484D', '红'], ['#F76B15', '橙'], ['#3E63DD', '蓝'], ['#30A46C', '绿']];
+function renderGeneral() {
+  $('toggles').innerHTML = REMINDERS.map(r => `<label class="tog"><input type="checkbox" data-k="${r[0]}" ${D.rem[r[0]] ? 'checked' : ''}><div><b>${r[1]}</b><span>${r[2]}</span></div></label>`).join('');
+  $('toggles').querySelectorAll('input').forEach(i => i.onchange = () => { D.rem[i.dataset.k] = i.checked; renderAll(); });
+  const m = D.pet.sleep_minutes;
+  $('sleep').value = m; $('sleepVal').textContent = m ? `${m} 分钟` : '不睡觉';
+  const cur = (D.ov.recording_color || '').toUpperCase();
+  $('recSwatches').innerHTML = REC_COLORS.map(c => `<button data-h="${c[0]}" aria-label="${c[1]}" style="background:${c[0]}" class="${cur === c[0] ? 'on' : ''}"></button>`).join('')
+    + `<label class="hint" style="display:flex;align-items:center;gap:6px"><input type="color" id="recCustom" value="${D.ov.recording_color}" aria-label="自定义录音颜色"> 自定义</label>`;
+  $('recSwatches').querySelectorAll('button').forEach(b => b.onclick = () => { D.ov.recording_color = b.dataset.h; renderAll(); });
+  $('recCustom').onchange = e => { D.ov.recording_color = e.target.value.toUpperCase(); renderAll(); };
+  $('pillScale').value = D.ov.scale; $('pillScaleVal').textContent = D.ov.scale.toFixed(2) + '×';
+  $('pillOpacity').value = D.ov.opacity; $('pillOpacityVal').textContent = Math.round(D.ov.opacity * 100) + '%';
+}
+$('sleep').oninput = e => { D.pet.sleep_minutes = +e.target.value; renderAll(); };
+$('pillScale').oninput = e => { D.ov.scale = +e.target.value; renderAll(); };
+$('pillOpacity').oninput = e => { D.ov.opacity = +e.target.value; renderAll(); };
+$('resetPos').onclick = async () => {
+  const ok = await api().reset_position();
+  toast(ok ? '桌宠已回到主屏右下角' : 'Pixel Murmur 没在运行，下次启动时会在默认位置', ok);
+};
+
 /* ────────── 公共 ────────── */
 function renderFoot() {
   if (toastTimer || !S) return;
@@ -556,7 +629,7 @@ function renderFoot() {
     : S.app_running ? '这是当前生效的设置' : 'Pixel Murmur 没在运行，保存后下次启动生效';
   $('save').disabled = bad || !dirty || editing !== null;
 }
-function renderAll() { renderHotkeys(); renderPet(); renderSounds(); renderFoot(); }
+function renderAll() { renderGeneral(); renderHotkeys(); renderPet(); renderSounds(); renderFoot(); }
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   stopEdit();
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
@@ -567,6 +640,8 @@ function load(st) {
   S = st; notes = {};
   D.hk = Object.assign({}, st.current); D.preset = st.preset;
   D.pet = Object.assign({}, st.pet); D.voice_vol = st.voice_vol; D.pet_vol = st.pet_vol;
+  D.rem = Object.assign({}, st.reminders); D.ov = Object.assign({}, st.overlay);
+  if (!D.rem.sleep) D.pet.sleep_minutes = 0;   // 「闲置时睡觉」关着 = 滑块在 0
   D.sounds = {}; D.soundInfo = {};
   for (const s of st.sounds) { D.sounds[s.id] = s.file ? s.file.rel : ''; if (s.file) D.soundInfo[s.id] = s.file; }
   repixel(); saved = snapshot(); renderAll();
@@ -576,7 +651,9 @@ $('save').onclick = async () => {
   if (D.pet.source === 'image' && !D.pet.image) { toast('选了「我的图片」但还没选图片', false); return; }
   if (D.pet.source === 'sheet' && !(D.pet.sheet && D.pet.sheet.frames[0])) { toast('选了「精灵图」但还没选好（或待机那行是空的）', false); return; }
   const P = D.pet;
+  D.rem.sleep = P.sleep_minutes > 0;          // 滑块拉到 0 就是不睡觉
   const r = await api().save({ hotkeys: D.hk, sounds: D.sounds, voice_vol: D.voice_vol, pet_vol: D.pet_vol,
+    reminders: D.rem, overlay: D.ov,
     pet: { source: P.source, character: P.character, body_color: P.body_color, pixel_size: P.pixel_size, fps: P.fps,
       sleep_minutes: P.sleep_minutes, pixelate: P.pixelate, grid: P.grid, sheet_cell: P.sheet_cell,
       image: P.image ? P.image.rel : '', sheet: P.sheet ? P.sheet.rel : '' } });

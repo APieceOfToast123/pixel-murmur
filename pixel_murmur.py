@@ -1349,11 +1349,11 @@ class Overlay:
             self._sessions.pop(sid, None)
             self._clear_alert()
             if name == "Stop":
-                # 做完的时候你不在 Claude 窗口里，就记成「没看」，桌宠头上亮小红点
-                # demo：演示模式发来的事件，不管 Claude 在不在前台都亮红点，方便录屏
-                if self.pet_opt["unread"] and (ev.get("demo") or not self._claude_in_front()):
+                # 做完就记成「没看」，桌宠头上亮小红点；Claude 在前台也记（你可能正看着别的会话），
+                # 单击桌宠跳到这个会话。之后只有「切回 Claude」的那一下才算全看过，所以记下此刻在不在前台。
+                if self.pet_opt["unread"]:
                     self._unread[sid] = now
-                    self._front_prev = False     # 记红点时 Claude 不在前台
+                    self._front_prev = self._claude_in_front()
                 self._celebrate_until = now + 2.2
                 if self.pet_opt["done_sound"]:
                     self.sounds.play("done")

@@ -1350,7 +1350,8 @@ class Overlay:
             self._clear_alert()
             if name == "Stop":
                 # 做完的时候你不在 Claude 窗口里，就记成「没看」，桌宠头上亮小红点
-                if self.pet_opt["unread"] and not self._claude_in_front():
+                # demo：演示模式发来的事件，不管 Claude 在不在前台都亮红点，方便录屏
+                if self.pet_opt["unread"] and (ev.get("demo") or not self._claude_in_front()):
                     self._unread[sid] = now
                     self._front_prev = False     # 记红点时 Claude 不在前台
                 self._celebrate_until = now + 2.2
@@ -1366,7 +1367,7 @@ class Overlay:
             if needs_you and self.pet_opt["alert"]:
                 self._alert_until = now + 600
                 self.sounds.play("alert")
-                self._bubble = ("需要你确认一下", self._alert_until, "alert")
+                self._bubble = (ev.get("bubble") or "需要你确认一下", self._alert_until, "alert")
         self._dirty = True
 
     def _clear_alert(self) -> None:
@@ -2844,6 +2845,68 @@ def send_to_app(obj: dict) -> bool:
     return True
 
 
+DEMO_TEXT = {
+    "zh": {"done": "改好了：换麦克风后会自动恢复", "alert": "需要你确认一下"},
+    "en": {"done": "Done: mic switching now recovers", "alert": "Needs your OK"},
+}
+
+
+def _recent_cli_sessions(n: int) -> list[str]:
+    """最近活动的几个桌面版 Code 会话的 session_id，演示时单击红点能真的跳过去。"""
+    found = []
+    for f in _desktop_session_files():
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        cli = d.get("lastAssistantCliSessionId") or d.get("cliSessionId")
+        if cli and not d.get("isArchived"):
+            found.append((float(d.get("lastActivityAt") or 0), str(cli)))
+    found.sort(reverse=True)
+    ids = [c for _, c in found[:n]]
+    while len(ids) < n:
+        ids.append(f"demo-{len(ids)}")
+    return ids
+
+
+def cmd_demo(step: str, lang: str) -> None:
+    """录视频用：按顺序给正在运行的桌宠发假的 Claude 事件，一次拍全几种状态。"""
+    if not user32.FindWindowW("PixelMurmurOverlay", None):
+        sys.exit("Pixel Murmur 没在运行，先启动它再演示。")
+    t = DEMO_TEXT[lang]
+    s1, s2 = _recent_cli_sessions(2)
+
+    def ev(name: str, sid: str, **kw) -> None:
+        send_to_app({"event": name, "session": sid, "demo": True, **kw})
+
+    def wait(sec: float, what: str) -> None:
+        print(f"  {what}（{sec:g} 秒）")
+        time.sleep(sec)
+
+    def typing():
+        ev("UserPromptSubmit", s1); wait(5, "敲键盘")
+
+    def done():
+        ev("Stop", s1, text=t["done"]); wait(5, "做完：跳起来 + 叮 + 气泡 + 小红点")
+
+    def alert():
+        ev("Notification", s1, type="permission_prompt", bubble=t["alert"]); wait(5, "需要你：头顶「!」+ 叮咚")
+
+    def unread():
+        ev("UserPromptSubmit", s2); wait(3, "第二个会话在干活")
+        ev("Stop", s2, text=t["done"]); wait(2, "第二个会话做完：红点变成 2")
+        print("  现在可以单击桌宠：打开最新做完的会话，红点减 1")
+
+    steps = {"typing": [typing], "done": [typing, done], "alert": [alert],
+             "unread": [typing, done, unread], "all": [typing, done, alert, unread]}[step]
+    for i in (3, 2, 1):
+        print(f"{i}…", flush=True)
+        time.sleep(1)
+    for f in steps:
+        f()
+    print("演示结束。桌宠上的「!」单击就消失；红点单击或切回 Claude 消失。")
+
+
 def write_hotkeys(mapping: dict) -> None:
     """把 {动作: 组合键} 写进 config.local.toml 的 [hotkeys]（空字符串 = 停用）。"""
     for action, _, _, _ in HOTKEY_ACTIONS:
@@ -3218,6 +3281,9 @@ def main() -> None:
     ap.add_argument("--list-devices", action="store_true")
     ap.add_argument("--transcribe", metavar="WAV")
     ap.add_argument("--benchmark", action="store_true", help="用保存的录音对比各个语音模型")
+    ap.add_argument("--demo", nargs="?", const="all", choices=["all", "typing", "done", "alert", "unread"],
+                    help="录视频用：让桌宠依次演示敲键盘、做完、需要你、小红点")
+    ap.add_argument("--lang", choices=["zh", "en"], default="zh", help="--demo 气泡文字的语言")
     ap.add_argument("--install-autostart", action="store_true")
     ap.add_argument("--remove-autostart", action="store_true")
     ap.add_argument("--setup", action="store_true", help="新电脑一键设置")
@@ -3239,6 +3305,8 @@ def main() -> None:
         return cmd_autostart(args.install_autostart)
     if args.setup:
         return cmd_setup(cfg)
+    if args.demo:
+        return cmd_demo(args.demo, args.lang)
     if args.settings:
         return cmd_settings()
 

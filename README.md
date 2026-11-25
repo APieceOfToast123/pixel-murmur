@@ -251,6 +251,7 @@ flowchart LR
 .venv\Scripts\python pixel_murmur.py --settings              # 打开设置窗口（快捷键 / 桌宠 / 提示音）
 .venv\Scripts\python pixel_murmur.py --benchmark             # 用保存的录音对比 SenseVoice 和 Whisper（需先 pip install faster-whisper）
 .venv\Scripts\python pixel_murmur.py --list-devices          # 列出麦克风
+.venv\Scripts\python pixel_murmur.py --demo                  # 录视频用：桌宠依次演示敲键盘、做完、需要你、小红点（--lang en 英文气泡）
 .venv\Scripts\python pixel_murmur.py --transcribe 录音.wav    # 单独测一段录音的转写速度
 .venv\Scripts\python pixel_murmur.py --remove-autostart      # 取消开机自启
 ```

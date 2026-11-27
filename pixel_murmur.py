@@ -488,6 +488,8 @@ if IS_WIN:
     _sig(user32.CallNextHookEx, ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM)
     _sig(user32.UnhookWindowsHookEx, wt.BOOL, ctypes.c_void_p)
     _sig(user32.IsZoomed, wt.BOOL, wt.HWND)
+    _sig(user32.GetKeyState, ctypes.c_short, ctypes.c_int)
+    _sig(user32.AttachThreadInput, wt.BOOL, wt.DWORD, wt.DWORD, wt.BOOL)
     _sig(user32.GetAsyncKeyState, ctypes.c_short, ctypes.c_int)
     _sig(user32.SendInput, wt.UINT, wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     _sig(user32.MapVirtualKeyW, wt.UINT, wt.UINT, wt.UINT)
@@ -2279,6 +2281,7 @@ class App:
         self._paused_at = 0.0           # 设置窗口录入新快捷键期间暂停全部快捷键
         self._last_mic = ""             # 上次实际用的麦克风名字
         self._mouse: MouseHotkeys | None = None            # 配了鼠标键才创建
+        self._caps_expected: bool | None = None            # CapsLock 当快捷键时，你期望的大小写状态
         self._mouse_actions: dict[int, tuple[str, int]] = {}
 
     # ── 生命周期 ──
@@ -2288,6 +2291,7 @@ class App:
         threading.Thread(target=self._worker, daemon=True).start()
         threading.Thread(target=self._housekeeping, daemon=True).start()
         self.jobs.put(("preload",))
+        self._sync_caps()
         self._register_hotkeys()
         user32.SetTimer(None, 0, 1000, None)  # 线程计时器：检查暂停是否超时
         msg = wt.MSG()
@@ -2371,6 +2375,7 @@ class App:
 
     def _resume_hotkeys(self) -> None:
         self._paused_at = 0.0
+        self._sync_caps()          # 暂停期间你可能按过 CapsLock，以现在的状态为准
         if not self._hotkeys:
             self._register_hotkeys(quiet=True)
 
@@ -2387,6 +2392,7 @@ class App:
             self._unregister_hotkeys()
             self._paused_at = 0.0
             log.info("快捷键已更新")
+            self._sync_caps()
             self._register_hotkeys()
         elif cmd == "reload_settings":
             # 设置窗口保存后：快捷键、桌宠外观、提示音、音量一起换上，不用重启
@@ -2395,6 +2401,7 @@ class App:
                 self.cfg[section] = new[section]
             self._unregister_hotkeys()
             self._paused_at = 0.0
+            self._sync_caps()
             self._register_hotkeys()
             self.overlay.reload(self.cfg)
             self.beep = self.overlay.sounds
@@ -2412,9 +2419,33 @@ class App:
     # 系统在按下 CapsLock 时就切换了大小写，注册成快捷键也拦不住。
     # 做法：等用户松开后，临时注销快捷键、替他再按一次 CapsLock 把状态切回来，再注册回去。
 
-    def _request_caps_fix(self, vk: int) -> None:
+    def _caps_on(self) -> bool:
+        """当前大小写锁定状态。本线程收不到键盘消息，直接 GetKeyState 读到的是旧值，
+        所以临时挂到前台窗口的输入队列上再读。"""
+        me = kernel32.GetCurrentThreadId()
+        fg = user32.GetForegroundWindow()
+        other = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        attached = bool(other and other != me and user32.AttachThreadInput(me, other, True))
+        try:
+            return bool(user32.GetKeyState(VK_CAPITAL) & 1)
+        finally:
+            if attached:
+                user32.AttachThreadInput(me, other, False)
+
+    def _sync_caps(self) -> None:
+        """记下「你期望的大小写状态」= 现在的实际状态（启动、恢复快捷键时调用）。"""
+        self._caps_expected = self._caps_on()
+
+    def _request_caps_fix(self, vk: int, toggle: bool = False) -> None:
+        """CapsLock 当快捷键时，系统按下时切不切大小写因键盘而异，不去猜：
+        自己记住期望状态，短按（toggle=True）期望翻转一次，长按说话期望不变；
+        松开后实际状态和期望不一致才补按一次。"""
         if vk != VK_CAPITAL:
             return
+        if self._caps_expected is None:
+            self._sync_caps()
+        if toggle:
+            self._caps_expected = not self._caps_expected
 
         def wait_release():
             deadline = time.monotonic() + 10
@@ -2427,6 +2458,10 @@ class App:
     def _restore_capslock(self) -> None:
         if self._paused_at:
             return
+        now_on = self._caps_on()
+        log.info("CapsLock：实际%s，期望%s", "大写" if now_on else "小写", "大写" if self._caps_expected else "小写")
+        if now_on == self._caps_expected:
+            return                       # 已经是期望的状态，不用动
         self._unregister_hotkeys()
         try:
             send_keys(VK_CAPITAL)
@@ -2551,8 +2586,7 @@ class App:
                 ole32.CoUninitialize()
             with self._state_lock:
                 self._recording = False
-            if result != "tap":          # 短按 CapsLock 是想切大小写，就不切回去了
-                self._request_caps_fix(vk)
+            self._request_caps_fix(vk, toggle=(result == "tap"))   # 短按 CapsLock = 想切大小写
         if result == "tap":
             log.info("短按说话键（不到 %.1f 秒），当普通按键处理", float(self.cfg["audio"].get("hold_delay", 0.5)))
             return

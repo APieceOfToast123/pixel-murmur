@@ -2475,9 +2475,9 @@ class App:
 
     def _scroll_claude_to_bottom(self) -> None:
         """跳到会话后把对话区滚到最底下：给 Claude 主窗口发滚轮消息，不动鼠标、不碰输入框。
-        对话加载要一点时间，所以 0.8 秒和 1.6 秒各滚一次。"""
+        跳转后等 0.3 秒滚一次。"""
         fc = self.cfg["focus"]
-        for delay in (0.8, 0.8):
+        for delay in (0.3,):
             time.sleep(delay)
             hwnd = find_window(fc["process_names"], fc["title_contains"])
             if not hwnd:

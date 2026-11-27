@@ -366,6 +366,10 @@ const CODE_MAP = { CapsLock: 'CapsLock', Pause: 'Pause', ScrollLock: 'ScrollLock
   PageUp: 'PageUp', PageDown: 'PageDown', Space: 'Space', Enter: 'Enter', Tab: 'Tab', Backquote: '`', Delete: 'Delete',
   Escape: 'Esc', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' };
 let notes = {}, editing = null, deadline = 0, editTimer = null, checking = false;
+// 鼠标键：config 里存 mouse3/4/5，界面上显示成中文
+const MOUSE_LABEL = { Mouse3: '鼠标中键', Mouse4: '鼠标侧键·后退', Mouse5: '鼠标侧键·前进' };
+const MOUSE_BTN = { 1: 'Mouse3', 3: 'Mouse4', 4: 'Mouse5' };
+const keyLabel = k => MOUSE_LABEL[k] || k;
 
 function keyName(e) {
   const c = e.code || '';
@@ -382,6 +386,7 @@ function hkInfo(a) {
   if (dup) return { msg: `和「${dup.label}」重复了`, color: 'var(--err)', bad: true };
   if (combo === 'Ctrl+Alt+W') return { msg: '微信自己也用 Ctrl+Alt+W，需在微信设置里关掉', color: 'var(--warn)', bad: false };
   if (a.hold && combo.split('+').length > 2) return { msg: '要一直按着说话，键越少越好按', color: 'var(--sub)', bad: false };
+  if (combo.includes('Mouse')) return { msg: '全屏游戏 / 视频在前台时不生效，交还给它们', color: 'var(--sub)', bad: false };
   if (a.hold && combo.includes('CapsLock')) return { msg: '占用后 CapsLock 不切大小写，打大写请按住 Shift', color: 'var(--sub)', bad: false };
   return { msg: '', bad: false };
 }
@@ -393,8 +398,8 @@ function renderHotkeys() {
     const inf = hkInfo(a), combo = D.hk[a.id] || '', ed = editing === a.id;
     const row = document.createElement('div');
     row.className = 'row' + (ed ? ' editing' : '') + (inf.bad ? ' bad' : '');
-    const keys = ed ? `<div class="listen"><span class="dot"></span>正在监听… 按下组合键（${Math.ceil(remain / 1000)}s，Esc 取消）</div>`
-      : combo ? combo.split('+').map(k => `<span class="key">${k}</span>`).join('') : '<span class="hint">未设置 · 已停用</span>';
+    const keys = ed ? `<div class="listen"><span class="dot"></span>正在监听… 按下组合键，或鼠标侧键 / 中键（${Math.ceil(remain / 1000)}s，Esc 取消）</div>`
+      : combo ? combo.split('+').map(k => `<span class="key">${keyLabel(k)}</span>`).join('') : '<span class="hint">未设置 · 已停用</span>';
     row.innerHTML = `<div class="ico">${svg(ICONS[a.id], 18)}</div>
       <div class="name"><b>${a.label}</b><span>${a.desc}</span></div>
       <div><div class="keys">${keys}</div>${inf.msg && !ed ? `<span class="msg" style="color:${inf.color}">${inf.msg}</span>` : ''}</div>
@@ -433,6 +438,22 @@ document.addEventListener('keydown', async e => {
   }
   stopEdit(); renderAll();
 }, true);
+// 录入鼠标侧键 / 中键（左右键留给点按钮，不录）
+async function recordMouse(e) {
+  if (editing === null || !MOUSE_BTN[e.button]) return;
+  e.preventDefault(); e.stopPropagation();
+  if (e.type !== 'mousedown' || checking) return;      // mouseup / auxclick 只负责拦住「后退 / 前进」
+  const parts = []; if (e.ctrlKey) parts.push('Ctrl'); if (e.altKey) parts.push('Alt'); if (e.shiftKey) parts.push('Shift');
+  parts.push(MOUSE_BTN[e.button]);
+  const id = editing, combo = parts.join('+');
+  checking = true; const r = await api().check(combo); checking = false;
+  if (r.ok) { D.hk[id] = combo; delete notes[id]; D.preset = 'custom'; } else notes[id] = r.msg;
+  stopEdit(); renderAll();
+}
+['mousedown', 'mouseup', 'auxclick'].forEach(t => document.addEventListener(t, recordMouse, true));
+// 平时在设置窗口里按侧键也别让页面「后退」
+document.addEventListener('mouseup', e => { if (e.button === 3 || e.button === 4) e.preventDefault(); });
+
 document.querySelectorAll('#presets button').forEach(b => b.onclick = async () => {
   const p = b.dataset.p; if (p === 'custom') return;
   stopEdit(); D.preset = p; notes = {}; D.hk = Object.assign({}, p === 'keyboard' ? S.keyboard : S.pad); renderAll();

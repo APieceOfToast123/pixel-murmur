@@ -482,6 +482,10 @@ if IS_WIN:
     _sig(user32.UnregisterHotKey, wt.BOOL, wt.HWND, ctypes.c_int)
     _sig(user32.GetMessageW, ctypes.c_int, ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT)
     _sig(user32.PostThreadMessageW, wt.BOOL, wt.DWORD, wt.UINT, wt.WPARAM, wt.LPARAM)
+    LowLevelMouseProc = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+    _sig(user32.SetWindowsHookExW, ctypes.c_void_p, ctypes.c_int, LowLevelMouseProc, wt.HINSTANCE, wt.DWORD)
+    _sig(user32.CallNextHookEx, ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+    _sig(user32.UnhookWindowsHookEx, wt.BOOL, ctypes.c_void_p)
     _sig(user32.GetAsyncKeyState, ctypes.c_short, ctypes.c_int)
     _sig(user32.SendInput, wt.UINT, wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     _sig(user32.MapVirtualKeyW, wt.UINT, wt.UINT, wt.UINT)
@@ -518,6 +522,11 @@ if IS_WIN:
 
 WM_HOTKEY = 0x0312
 WM_APP_FIXCAPS = 0x8001  # WM_APP + 1：松开 CapsLock 后把大小写状态切回来
+WM_APP_MOUSEHOTKEY = 0x8002  # WM_APP + 2：鼠标钩子线程通知主线程「某个鼠标快捷键按下了」
+WH_MOUSE_LL = 14
+WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP = 0x0207, 0x0208, 0x020B, 0x020C
+VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2 = 0x04, 0x05, 0x06
+MOUSE_VKS = (VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2)
 WM_QUIT = 0x0012
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
 VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN = 0x10, 0x11, 0x12, 0x5B, 0x5C
@@ -536,7 +545,9 @@ VK_CAPITAL = 0x14
 _NAMED_KEYS = {"space": 0x20, "enter": 0x0D, "tab": 0x09, "esc": 0x1B, "pause": 0x13,
                "scrolllock": 0x91, "insert": 0x2D, "home": 0x24, "end": 0x23,
                "pageup": 0x21, "pagedown": 0x22, "capslock": VK_CAPITAL, "delete": 0x2E,
-               "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "`": 0xC0}
+               "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "`": 0xC0,
+               # 鼠标：Mouse3 = 中键，Mouse4 = 侧键「后退」，Mouse5 = 侧键「前进」
+               "mouse3": VK_MBUTTON, "mouse4": VK_XBUTTON1, "mouse5": VK_XBUTTON2}
 # 设置窗口里显示用的写法（config 里一律存小写，如 "shift+capslock"）
 _KEY_DISPLAY = {"ctrl": "Ctrl", "control": "Ctrl", "alt": "Alt", "shift": "Shift", "win": "Win",
                 "capslock": "CapsLock", "scrolllock": "ScrollLock", "pageup": "PageUp",
@@ -577,8 +588,92 @@ def parse_hotkey(spec: str) -> tuple[int, int]:
     return mods, vk
 
 
+# 被鼠标钩子拦下的按键不会更新系统的按键状态，按下 / 松开由钩子自己记在这里
+_mouse_held: dict[int, bool] = {}
+
+
 def key_down(vk: int) -> bool:
+    if vk in _mouse_held:
+        return _mouse_held[vk]
     return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD), ("flags", wt.DWORD),
+                ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+
+def _current_mods() -> int:
+    mods = 0
+    if user32.GetAsyncKeyState(VK_CONTROL) & 0x8000:
+        mods |= MOD_CONTROL
+    if user32.GetAsyncKeyState(VK_MENU) & 0x8000:
+        mods |= MOD_ALT
+    if user32.GetAsyncKeyState(VK_SHIFT) & 0x8000:
+        mods |= MOD_SHIFT
+    if (user32.GetAsyncKeyState(VK_LWIN) | user32.GetAsyncKeyState(VK_RWIN)) & 0x8000:
+        mods |= MOD_WIN
+    return mods
+
+
+class MouseHotkeys:
+    """鼠标侧键 / 中键当快捷键：全局低级鼠标钩子，跑在自己的线程里。
+    - 只有配置了鼠标键时才挂钩子；鼠标移动、左右键、滚轮一律立刻放行，不做任何处理。
+    - 绑定了的键按下和松开都拦下来（浏览器里不会跟着「后退 / 前进」），
+      前台是全屏程序（游戏、全屏视频）时不拦，交还给它。
+    - 按下时给主线程发 WM_APP_MOUSEHOTKEY，和键盘快捷键走同一套处理。"""
+
+    def __init__(self, main_tid: int, fullscreen_check):
+        self.main_tid = main_tid
+        self.fullscreen_check = fullscreen_check
+        self.bindings: dict[int, tuple[int, int]] = {}   # 编号 -> (vk, 修饰键)
+        self._swallowed: set[int] = set()
+        self._proc = LowLevelMouseProc(self._hook)        # 必须一直引用着，否则会被回收
+        self._thread: threading.Thread | None = None
+
+    def set_bindings(self, bindings: dict[int, tuple[int, int]]) -> None:
+        self.bindings = dict(bindings)
+        if bindings and self._thread is None:
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="mouse-hook")
+            self._thread.start()
+
+    def _loop(self) -> None:
+        hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._proc, kernel32.GetModuleHandleW(None), 0)
+        if not hook:
+            log.error("鼠标钩子安装失败（错误 %d），鼠标快捷键不可用", ctypes.get_last_error())
+            self._thread = None
+            return
+        log.info("鼠标快捷键已启用")
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            pass
+        user32.UnhookWindowsHookEx(hook)
+
+    def _hook(self, code, wparam, lparam):
+        if code < 0 or wparam not in (WM_MBUTTONDOWN, WM_MBUTTONUP, WM_XBUTTONDOWN, WM_XBUTTONUP):
+            return user32.CallNextHookEx(None, code, wparam, lparam)
+        try:
+            info = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+            if wparam in (WM_MBUTTONDOWN, WM_MBUTTONUP):
+                vk = VK_MBUTTON
+            else:
+                vk = VK_XBUTTON1 if (info.mouseData >> 16) & 0xFFFF == 1 else VK_XBUTTON2
+            if wparam in (WM_MBUTTONDOWN, WM_XBUTTONDOWN):
+                mods = _current_mods()
+                hit = next((i for i, (bvk, bm) in self.bindings.items() if bvk == vk and bm == mods), None)
+                if hit is not None and not self.fullscreen_check():
+                    self._swallowed.add(vk)
+                    _mouse_held[vk] = True
+                    user32.PostThreadMessageW(self.main_tid, WM_APP_MOUSEHOTKEY, hit, 0)
+                    return 1
+            elif vk in self._swallowed:          # 按下被拦了，松开也要拦，并记下「已松开」
+                self._swallowed.discard(vk)
+                _mouse_held[vk] = False
+                return 1
+        except Exception:
+            log.exception("鼠标钩子出错")
+        return user32.CallNextHookEx(None, code, wparam, lparam)
 
 
 def wait_keys_released(extra_vks: tuple[int, ...] = (), timeout: float = 2.0) -> bool:
@@ -2166,6 +2261,8 @@ class App:
         self._hotkeys: dict[int, tuple[str, int]] = {}
         self._paused_at = 0.0           # 设置窗口录入新快捷键期间暂停全部快捷键
         self._last_mic = ""             # 上次实际用的麦克风名字
+        self._mouse: MouseHotkeys | None = None            # 配了鼠标键才创建
+        self._mouse_actions: dict[int, tuple[str, int]] = {}
 
     # ── 生命周期 ──
 
@@ -2183,6 +2280,11 @@ class App:
                     if msg.message == WM_HOTKEY:
                         action, vk = self._hotkeys.get(int(msg.wParam), ("", 0))
                         self._dispatch(action, vk)
+                        continue
+                    if msg.message == WM_APP_MOUSEHOTKEY:
+                        action, vk = self._mouse_actions.get(int(msg.wParam), ("", 0))
+                        if action:
+                            self._dispatch(action, vk)
                         continue
                     if msg.message == WM_APP_FIXCAPS:
                         self._restore_capslock()
@@ -2209,6 +2311,8 @@ class App:
 
     def _register_hotkeys(self, quiet: bool = False) -> None:
         failed = []
+        mouse: dict[int, tuple[int, int]] = {}
+        self._mouse_actions.clear()
         for i, (action, spec) in enumerate(self.cfg["hotkeys"].items(), start=1):
             if not spec:
                 continue
@@ -2220,12 +2324,22 @@ class App:
             except ValueError as e:
                 failed.append(f"{action}={spec}（{e}）")
                 continue
+            if vk in MOUSE_VKS:            # 鼠标键不走 RegisterHotKey，交给鼠标钩子
+                self._mouse_actions[i] = (action, vk)
+                mouse[i] = (vk, mods)
+                if not quiet:
+                    log.info("快捷键 %-12s = %s（鼠标）", action, spec)
+                continue
             if user32.RegisterHotKey(None, i, mods | MOD_NOREPEAT, vk):
                 self._hotkeys[i] = (action, vk)
                 if not quiet:
                     log.info("快捷键 %-12s = %s", action, spec)
             else:
                 failed.append(f"{action}={spec}")
+        if mouse or self._mouse is not None:
+            if self._mouse is None:
+                self._mouse = MouseHotkeys(self._main_tid, self.overlay._foreground_is_fullscreen)
+            self._mouse.set_bindings(mouse)
         if failed and not quiet:  # 暂停后恢复、CapsLock 还原时重注册，不重复报同一个错
             text = "快捷键注册失败（被其他程序占用？）：" + "，".join(failed)
             log.error(text)
@@ -2235,6 +2349,8 @@ class App:
         for hk_id in list(self._hotkeys):
             user32.UnregisterHotKey(None, hk_id)
         self._hotkeys.clear()
+        if self._mouse is not None:
+            self._mouse.set_bindings({})
 
     def _resume_hotkeys(self) -> None:
         self._paused_at = 0.0
@@ -3080,6 +3196,8 @@ class SettingsApi:
             mods, vk = parse_hotkey(combo)
         except ValueError as e:
             return {"ok": False, "msg": str(e)}
+        if vk in MOUSE_VKS:      # 鼠标键由程序自己的钩子处理，不会和别的程序抢
+            return {"ok": True}
         if user32.RegisterHotKey(None, 0xBFFF, mods | MOD_NOREPEAT, vk):
             user32.UnregisterHotKey(None, 0xBFFF)
             return {"ok": True}

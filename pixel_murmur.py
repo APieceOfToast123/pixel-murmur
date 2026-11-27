@@ -1008,6 +1008,8 @@ TPM_RIGHTBUTTON, TPM_NONOTIFY, TPM_RETURNCMD = 0x2, 0x80, 0x100
 SPI_GETWORKAREA, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTONEAREST = 0x30, 0, 2
 ULW_ALPHA, AC_SRC_ALPHA = 0x2, 0x1
 WM_COPYDATA = 0x004A
+WM_MOUSEWHEEL = 0x020A
+WHEEL_DELTA = 120
 PET_MSG_MAGIC = 0x50455431  # 'PET1'：pet_hook.py 发来的 WM_COPYDATA 标记
 
 _FONT_FILES = [("C:/Windows/Fonts/msyh.ttc", 1), ("C:/Windows/Fonts/msyh.ttc", 0),
@@ -2334,6 +2336,30 @@ class App:
             log.info("已打开会话 %s", local)
         except OSError as e:
             log.warning("打开会话失败：%s", e)
+            return
+        threading.Thread(target=self._scroll_claude_to_bottom, daemon=True).start()
+
+    def _scroll_claude_to_bottom(self) -> None:
+        """跳到会话后把对话区滚到最底下：给 Claude 主窗口发滚轮消息，不动鼠标、不碰输入框。
+        对话加载要一点时间，所以 0.8 秒和 1.6 秒各滚一次。"""
+        fc = self.cfg["focus"]
+        for delay in (0.8, 0.8):
+            time.sleep(delay)
+            hwnd = find_window(fc["process_names"], fc["title_contains"])
+            if not hwnd:
+                return
+            rc = wt.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rc)):
+                return
+            # 对话区大约在窗口横向 30%、纵向一半的位置（左边是侧边栏，右边可能开着别的面板）
+            x = rc.left + int((rc.right - rc.left) * 0.30)
+            y = rc.top + int((rc.bottom - rc.top) * 0.5)
+            wparam = ((-WHEEL_DELTA * 5) & 0xFFFF) << 16
+            lparam = ((y & 0xFFFF) << 16) | (x & 0xFFFF)
+            for _ in range(30):
+                user32.PostMessageW(hwnd, WM_MOUSEWHEEL, wparam, lparam)
+                time.sleep(0.01)
+        log.info("已滚到对话底部")
 
     def _focus(self, section: str, toggle: bool = True) -> None:
         """唤起目标程序。toggle=True（手柄 +/−）：已经在前台就把它最小化；
@@ -2719,6 +2745,11 @@ def cmd_autostart(install: bool) -> None:
             value = f'"{pythonw}" "{Path(__file__).resolve()}"'
             winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, value)
             print("已设置开机自启：", value)
+            # 在 Claude 桌面版这类商店应用里（比如让 AI 代为安装）运行时，注册表写入会被重定向进
+            # 应用自己的私有副本，开机时 Windows 看不到。提醒用户在应用外面自己再运行一次。
+            print("  注意：如果这条命令是在 Claude 等应用里（比如让 AI 代为安装）运行的，开机自启可能不生效。")
+            print("  请按 Win+R，自己再运行一次：")
+            print(f'  "{sys.executable}" "{Path(__file__).resolve()}" --install-autostart')
         else:
             print("已取消开机自启")
 

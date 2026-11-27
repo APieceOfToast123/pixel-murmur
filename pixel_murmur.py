@@ -86,7 +86,7 @@ DEFAULTS: dict = {
         "fallback_to_default": True,   # 指定的麦克风找不到时改用系统默认麦克风
         "max_seconds": 120,
         "min_seconds": 0.3,
-        "hold_delay": 0.7,   # 说话键按住超过这么久才算「说话」；更短的算普通按键（CapsLock 照常切大小写）
+        "hold_delay": 0.5,   # 说话键按住超过这么久才算「说话」；更短的算普通按键（CapsLock 照常切大小写）
         "trim_head": 0.15,
         "trim_tail": 0.10,
         "silence_rms": 0.002,
@@ -2554,7 +2554,7 @@ class App:
             if result != "tap":          # 短按 CapsLock 是想切大小写，就不切回去了
                 self._request_caps_fix(vk)
         if result == "tap":
-            log.info("短按说话键（不到 %.1f 秒），当普通按键处理", float(self.cfg["audio"].get("hold_delay", 0.7)))
+            log.info("短按说话键（不到 %.1f 秒），当普通按键处理", float(self.cfg["audio"].get("hold_delay", 0.5)))
             return
         if result is None:
             self.overlay.set("idle")
@@ -2629,7 +2629,7 @@ class App:
         stream, sr = self._open_stream(callback)
         t0 = time.monotonic()
         pressed = getattr(self, "_pressed_at", t0)
-        hold_delay = float(ac.get("hold_delay", 0.7))
+        hold_delay = float(ac.get("hold_delay", 0.5))
         started = False      # 按住超过 hold_delay 才提示「开始录音」；麦克风从按下就在录，这段话不会丢
         timed_out = False
         try:

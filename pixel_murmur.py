@@ -86,6 +86,7 @@ DEFAULTS: dict = {
         "fallback_to_default": True,   # 指定的麦克风找不到时改用系统默认麦克风
         "max_seconds": 120,
         "min_seconds": 0.3,
+        "hold_delay": 0.7,   # 说话键按住超过这么久才算「说话」；更短的算普通按键（CapsLock 照常切大小写）
         "trim_head": 0.15,
         "trim_tail": 0.10,
         "silence_rms": 0.002,
@@ -486,6 +487,7 @@ if IS_WIN:
     _sig(user32.SetWindowsHookExW, ctypes.c_void_p, ctypes.c_int, LowLevelMouseProc, wt.HINSTANCE, wt.DWORD)
     _sig(user32.CallNextHookEx, ctypes.c_ssize_t, ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM)
     _sig(user32.UnhookWindowsHookEx, wt.BOOL, ctypes.c_void_p)
+    _sig(user32.IsZoomed, wt.BOOL, wt.HWND)
     _sig(user32.GetAsyncKeyState, ctypes.c_short, ctypes.c_int)
     _sig(user32.SendInput, wt.UINT, wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     _sig(user32.MapVirtualKeyW, wt.UINT, wt.UINT, wt.UINT)
@@ -629,6 +631,7 @@ class MouseHotkeys:
         self.fullscreen_check = fullscreen_check
         self.bindings: dict[int, tuple[int, int]] = {}   # 编号 -> (vk, 修饰键)
         self._swallowed: set[int] = set()
+        self._down_at: dict[int, float] = {}
         self._proc = LowLevelMouseProc(self._hook)        # 必须一直引用着，否则会被回收
         self._thread: threading.Thread | None = None
 
@@ -662,14 +665,19 @@ class MouseHotkeys:
             if wparam in (WM_MBUTTONDOWN, WM_XBUTTONDOWN):
                 mods = _current_mods()
                 hit = next((i for i, (bvk, bm) in self.bindings.items() if bvk == vk and bm == mods), None)
+                if hit is not None and self.fullscreen_check():
+                    log.info("鼠标键 0x%X：前台是全屏程序，交还给它", vk)
                 if hit is not None and not self.fullscreen_check():
                     self._swallowed.add(vk)
+                    self._down_at[vk] = time.monotonic()
                     _mouse_held[vk] = True
                     user32.PostThreadMessageW(self.main_tid, WM_APP_MOUSEHOTKEY, hit, 0)
                     return 1
             elif vk in self._swallowed:          # 按下被拦了，松开也要拦，并记下「已松开」
                 self._swallowed.discard(vk)
                 _mouse_held[vk] = False
+                log.info("鼠标键 0x%X 按住了 %.2f 秒%s", vk, time.monotonic() - self._down_at.get(vk, 0),
+                         "" if info.flags & 1 == 0 else "（软件模拟的事件）")
                 return 1
         except Exception:
             log.exception("鼠标钩子出错")
@@ -1492,6 +1500,15 @@ class Overlay:
         user32.GetClassNameW(fg, cls, 64)
         if cls.value in ("Progman", "WorkerW", "Shell_TrayWnd"):  # 桌面、任务栏不算
             return False
+        # 最大化的普通窗口（任务栏自动隐藏时也会铺满整个屏幕）不算全屏程序；
+        # 真正的全屏游戏 / 视频不是「最大化」状态
+        if user32.IsZoomed(fg):
+            return False
+        # Claude、微信这些「唤起目标」铺满屏幕时也不算（Claude 的窗口没有标准的最大化状态）
+        for section in ("focus", "focus_wechat"):
+            fc = self.cfg.get(section) or {}
+            if fc.get("process_names") and foreground_root_if(fc["process_names"], fc.get("title_contains", "")):
+                return False
         rc = wt.RECT()
         if not user32.GetWindowRect(fg, ctypes.byref(rc)):
             return False
@@ -2424,6 +2441,7 @@ class App:
                     return
                 self._recording = True
                 self._cancel.clear()
+            self._pressed_at = time.monotonic()
             threading.Thread(target=self._session, args=(action == "talk_send", vk),
                              daemon=True).start()
         elif action == "cancel":
@@ -2517,6 +2535,7 @@ class App:
         # WASAPI 要求开流的线程先初始化 COM；本线程是新开的，不初始化会报
         # “Unanticipated host error -9999”（报错里的 WDM-KS 字样是残留信息）。
         com_ok = IS_WIN and ole32.CoInitializeEx(None, COINIT_MULTITHREADED) >= 0
+        result = None
         try:
             result = self._record(vk)
         except Exception as e:
@@ -2532,7 +2551,11 @@ class App:
                 ole32.CoUninitialize()
             with self._state_lock:
                 self._recording = False
-            self._request_caps_fix(vk)
+            if result != "tap":          # 短按 CapsLock 是想切大小写，就不切回去了
+                self._request_caps_fix(vk)
+        if result == "tap":
+            log.info("短按说话键（不到 %.1f 秒），当普通按键处理", float(self.cfg["audio"].get("hold_delay", 0.7)))
+            return
         if result is None:
             self.overlay.set("idle")
             return
@@ -2605,10 +2628,11 @@ class App:
 
         stream, sr = self._open_stream(callback)
         t0 = time.monotonic()
+        pressed = getattr(self, "_pressed_at", t0)
+        hold_delay = float(ac.get("hold_delay", 0.7))
+        started = False      # 按住超过 hold_delay 才提示「开始录音」；麦克风从按下就在录，这段话不会丢
         timed_out = False
         try:
-            self.overlay.set("recording")
-            self.beep("start")
             up_since = None
             while True:
                 time.sleep(0.01)
@@ -2619,11 +2643,17 @@ class App:
                     timed_out = True
                     log.warning("达到最长录音时间 %s 秒，自动收尾", ac["max_seconds"])
                     break
+                if not started and now - pressed >= hold_delay:
+                    started = True
+                    self.overlay.set("recording")
+                    self.beep("start")
                 if key_down(vk):
                     up_since = None
                 elif up_since is None:
                     up_since = now
                 elif now - up_since >= 0.03:  # 连续 30 毫秒都是松开才算，防抖
+                    if not started:
+                        return "tap"          # 短按：当普通按键，不录
                     break
         finally:
             with _pa_lock:
